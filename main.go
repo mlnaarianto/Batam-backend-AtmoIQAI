@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"os"
 	"weather-backend/config"
 	"weather-backend/database"
 	"weather-backend/middlewares"
@@ -28,8 +29,18 @@ func main() {
 	// 2. Koneksi Database
 	config.ConnectDB()
 
-	// 3. Jalankan Seluruh Seeder Secara Terpusat
-	database.RunAllSeeders()
+	// 3. Jalankan Seluruh Seeder HANYA jika diminta secara eksplisit lewat env var.
+	// Ini penting supaya perubahan RBAC (Role & Permission) yang sudah diatur
+	// manual lewat UI TIDAK ke-reset setiap kali server di-restart/`go run .` lagi.
+	// Cara pakai: set RUN_SEEDER=true di file .env atau environment saat memang
+	// ingin menjalankan/reset seeder (misal setup awal project).
+	if os.Getenv("RUN_SEEDER") == "true" {
+		config.Log.Info("RUN_SEEDER=true terdeteksi, menjalankan seeder...")
+		database.RunAllSeeders()
+		config.Log.Info("Seeder selesai dijalankan.")
+	} else {
+		config.Log.Info("Seeder dilewati (RUN_SEEDER tidak diset ke true).")
+	}
 
 	r := gin.Default()
 

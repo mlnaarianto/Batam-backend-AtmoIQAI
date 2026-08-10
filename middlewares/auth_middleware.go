@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	
 )
 
 var JwtKey = []byte(getJwtSecret())
@@ -48,7 +49,13 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
+		// --- BAGIAN YANG DITAMBAHKAN ---
+		// Set data dari JWT claims ke dalam Gin Context
+		c.Set("user_id", claims["user_id"])
 		c.Set("username", claims["username"])
+		c.Set("role", claims["role"]) // Sekalian simpan role untuk mempermudah pengecekan jika diperlukan nanti
+		// -------------------------------
+
 		c.Next()
 	}
 }

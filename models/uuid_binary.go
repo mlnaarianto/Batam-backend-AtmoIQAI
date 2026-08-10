@@ -2,12 +2,36 @@ package models
 
 import (
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"github.com/google/uuid"
 )
 
 // UUIDBinary adalah tipe kustom agar uuid.UUID bisa klop dengan kolom BINARY(16) MySQL
 type UUIDBinary uuid.UUID
+
+// --- TAMBAHAN: bikin UUIDBinary di-encode/decode sebagai string UUID biasa di JSON ---
+
+func (u UUIDBinary) MarshalJSON() ([]byte, error) {
+	return json.Marshal(uuid.UUID(u).String())
+}
+
+func (u *UUIDBinary) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	if s == "" {
+		*u = UUIDBinary(uuid.Nil)
+		return nil
+	}
+	parsed, err := uuid.Parse(s)
+	if err != nil {
+		return err
+	}
+	*u = UUIDBinary(parsed)
+	return nil
+}
 
 // helperScan membaca data binary 16-byte dari database MySQL dan mengubahnya kembali menjadi UUID Go
 func helperScan(u *UUIDBinary, value interface{}) error {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -55,6 +56,7 @@ func Login(c *gin.Context) {
 
 	expirationTime := time.Now().Add(24 * time.Hour)
 	claims := jwt.MapClaims{
+		"user_id":  uuid.UUID(user.ID).String(), // Menyertakan user_id ke dalam payload JWT
 		"username": user.Username,
 		"role":     roleName,
 		"exp":      expirationTime.Unix(),
@@ -68,14 +70,32 @@ func Login(c *gin.Context) {
 		return
 	}
 
+	// =========================================================================
+	// 4. SIMPAN TOKEN KE TABEL personal_access_tokens
+	// =========================================================================
+	accessToken := models.PersonalAccessToken{
+		UserID:    user.ID,
+		TokenHash: tokenString,
+		Type:      "bearer",
+		ExpiredAt: expirationTime,
+	}
+
+	if errCreateToken := config.DB.Create(&accessToken).Error; errCreateToken != nil {
+		config.Log.Error("Gagal menyimpan personal access token ke database", zap.Error(errCreateToken))
+		helpers.ResponseInternalError(c, gin.H{"error": "Gagal menyimpan sesi login"})
+		return
+	}
+	// =========================================================================
+
 	// Log sukses login
 	config.Log.Info("Login berhasil",
 		zap.String("username", user.Username),
 		zap.String("role", roleName),
 	)
 
-	// Respons sukses
+	// Respons sukses mengembalikan token dan ID pengguna untuk localStorage frontend
 	helpers.ResponseOK(c, gin.H{
+		"id":       uuid.UUID(user.ID).String(),
 		"message":  "Login berhasil!",
 		"token":    tokenString,
 		"username": user.Username,

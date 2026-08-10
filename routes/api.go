@@ -9,13 +9,21 @@ import (
 )
 
 func SetupRouter(r *gin.Engine) {
-	// Rute Publik
+	// =========================================================================
+	// RUTE PUBLIK (Tanpa Autentikasi)
+	// =========================================================================
 	r.GET("/ping", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"message": "pong! Weather API Batam is running smoothly."})
+		c.JSON(http.StatusOK, gin.H{"message": "pong! Aeroclimate API is running smoothly."})
 	})
 	r.POST("/login", controllers.Login)
 
-	// Rute Terproteksi dengan Middleware Autentikasi & Permission RBAC
+	// Endpoint publik untuk View All / View Per ID data publik
+	r.GET("/api/public/weather-predictions", controllers.GetPublicWeatherPredictions())
+	r.GET("/api/public/stations", controllers.GetStations())
+
+	// =========================================================================
+	// RUTE TERPROTEKSI - Hanya butuh login
+	// =========================================================================
 	protected := r.Group("/api")
 	protected.Use(middlewares.AuthMiddleware())
 	{
@@ -27,30 +35,28 @@ func SetupRouter(r *gin.Engine) {
 		})
 	}
 
-	// Rute Khusus Admin dengan Permission "manage-sensors"
+	// =========================================================================
+	// RUTE ADMIN UMUM (Dashboard Admin & RBAC)
+	// =========================================================================
 	adminRoutes := r.Group("/api/admin")
-	adminRoutes.Use(middlewares.AuthMiddleware(), middlewares.RequirePermission("manage-sensors"))
+	adminRoutes.Use(middlewares.AuthMiddleware(), middlewares.RequirePermission("view-weather"))
 	{
-		adminRoutes.GET("/dashboard-stats", func(c *gin.Context) {
-			c.JSON(http.StatusOK, gin.H{
-				"message":              "Selamat datang di Panel Kontrol Admin BMKG Batam!",
-				"status_server_ai":     "Aktif & Normal",
-				"total_stasiun_sensor": 5,
-			})
-		})
-
-		// ---> RUTE RBAC (read-only, boleh tetap ikut manage-sensors atau nanti dipisah juga) <---
+		adminRoutes.GET("/dashboard-stats", controllers.GetDashboardStats())
 		adminRoutes.GET("/rbac", controllers.GetRBACData)
 	}
 
-	// ---> RUTE UPDATE ROLE USER - permission "manage-user-roles" <---
+	// =========================================================================
+	// RUTE MANAJEMEN USER ROLES
+	// =========================================================================
 	userRoleRoutes := r.Group("/api/admin/users")
 	userRoleRoutes.Use(middlewares.AuthMiddleware(), middlewares.RequirePermission("manage-user-roles"))
 	{
 		userRoleRoutes.PUT("/:id/roles", controllers.UpdateUserRoles)
 	}
 
-	// ---> RUTE MANAJEMEN ROLE (CRUD role) - permission "manage-roles" <---
+	// =========================================================================
+	// RUTE MANAJEMEN ROLE & PERMISSION
+	// =========================================================================
 	roleRoutes := r.Group("/api/admin/roles")
 	roleRoutes.Use(middlewares.AuthMiddleware(), middlewares.RequirePermission("manage-roles"))
 	{
@@ -59,10 +65,52 @@ func SetupRouter(r *gin.Engine) {
 		roleRoutes.DELETE("/:id", controllers.DeleteRole)
 	}
 
-	// ---> RUTE MANAJEMEN PERMISSION ROLE (assign permission ke role) - permission "manage-role-permissions" <---
 	rolePermRoutes := r.Group("/api/admin/roles")
 	rolePermRoutes.Use(middlewares.AuthMiddleware(), middlewares.RequirePermission("manage-role-permissions"))
 	{
 		rolePermRoutes.PUT("/:id/permissions", controllers.UpdateRolePermissions)
+	}
+
+	// =========================================================================
+	// RUTE MANAJEMEN STATION
+	// =========================================================================
+	stationRoutes := r.Group("/api/admin")
+	stationRoutes.Use(middlewares.AuthMiddleware(), middlewares.RequirePermission("manage-stations"))
+	{
+		stationRoutes.GET("/stations", controllers.GetStations())
+		stationRoutes.GET("/stations/:id", controllers.GetStationByID())
+		stationRoutes.POST("/stations", controllers.CreateStation())
+		stationRoutes.PUT("/stations/:id", controllers.UpdateStation())
+		stationRoutes.DELETE("/stations/:id", controllers.DeleteStation())
+		stationRoutes.GET("/stations/geocode", controllers.GeocodeSearch())
+		stationRoutes.GET("/stations/reverse-geocode", controllers.ReverseGeocode())
+	}
+
+	// =========================================================================
+	// RUTE WEATHER PREDICTIONS (Akses Fleksibel Berdasarkan Auth & Controller Logic)
+	// =========================================================================
+	
+	// 1. Rute List Utama (Hanya butuh login, logika filter diserahkan cerdas ke controller)
+	r.GET(
+		"/api/admin/weather-predictions", 
+		middlewares.AuthMiddleware(), 
+		controllers.GetWeatherPredictions(),
+	)
+
+	// 2. Rute Detail Berdasarkan ID Path Parameter (Memerlukan izin view-id)
+	r.GET(
+		"/api/admin/weather-predictions/:id", 
+		middlewares.AuthMiddleware(), 
+		middlewares.RequirePermission("weather-predictions:view-id"), 
+		controllers.GetWeatherPredictionByID(),
+	)
+
+	// 3. Rute untuk Modifikasi Data (Create, Update, Delete - Memerlukan izin manage-weather-predictions)
+	managePredictionGroup := r.Group("/api/admin")
+	managePredictionGroup.Use(middlewares.AuthMiddleware(), middlewares.RequirePermission("manage-weather-predictions"))
+	{
+		managePredictionGroup.POST("/weather-predictions", controllers.CreateWeatherPrediction())
+		managePredictionGroup.PUT("/weather-predictions/:id", controllers.UpdateWeatherPrediction())
+		managePredictionGroup.DELETE("/weather-predictions/:id", controllers.DeleteWeatherPrediction())
 	}
 }

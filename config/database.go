@@ -41,6 +41,9 @@ func ConnectDB() {
 		&models.User{},
 		&models.Role{},
 		&models.Permission{},
+		&models.PersonalAccessToken{},
+		&models.Station{},           // <--- Tambahkan di sini
+		&models.WeatherPrediction{}, // <--- Tambahkan setelah Station
 	)
 	if err != nil {
 		log.Fatalf("Gagal melakukan Auto Migrate database: %v", err)
