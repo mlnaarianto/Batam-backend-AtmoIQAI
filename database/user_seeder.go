@@ -1,79 +1,47 @@
 package database
 
 import (
+	"context"
 	"fmt"
-	"weather-backend/config"
-	"weather-backend/models"
+
+	"weather-backend/repositories"
 
 	"golang.org/x/crypto/bcrypt"
 )
 
-// Fungsi helper untuk generate hash password
-func hashPassword(password string) string {
-	bytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+func SeedUsers(ctx context.Context, db repositories.DBTX) error {
+	// Password default "123" (hanya untuk pengembangan)
+	hash, err := bcrypt.GenerateFromPassword([]byte("123"), bcrypt.DefaultCost)
 	if err != nil {
-		return ""
+		return fmt.Errorf("hash password seeder: %w", err)
 	}
-	return string(bytes)
-}
+	hashed := string(hash)
 
-func SeedUsers() {
-	// Hash password default "123"
-	hashedPassword := hashPassword("123")
-
-	// 1. Cek atau buat user superadmin
-	var adminUser models.User
-	if err := config.DB.Where("username = ?", "superadmin").First(&adminUser).Error; err != nil {
-		adminUser = models.User{
-			Username: "superadmin",
-			Name:     "Super Admin BMKG",
-			Email:    "superadmin@gmail.com",
-			Password: hashedPassword,
-		}
-		if errCreate := config.DB.Create(&adminUser).Error; errCreate != nil {
-			fmt.Println("Gagal membuat user superadmin:", errCreate)
-			return
-		}
+	adminUserID, err := ensureUser(ctx, db, "superadmin", "Super Admin BMKG", "superadmin@gmail.com", hashed)
+	if err != nil {
+		return err
+	}
+	regularUserID, err := ensureUser(ctx, db, "warga_batam", "Warga Kota Batam", "warga.batam@gmail.com", hashed)
+	if err != nil {
+		return err
 	}
 
-	// 2. Cek atau buat user warga_batam
-	var regularUser models.User
-	if err := config.DB.Where("username = ?", "warga_batam").First(&regularUser).Error; err != nil {
-		regularUser = models.User{
-			Username: "warga_batam",
-			Name:     "Warga Kota Batam",
-			Email:    "warga.batam@gmail.com",
-			Password: hashedPassword,
-		}
-		if errCreate := config.DB.Create(&regularUser).Error; errCreate != nil {
-			fmt.Println("Gagal membuat user warga_batam:", errCreate)
-			return
-		}
+	adminRoleID, err := ensureRole(ctx, db, "admin")
+	if err != nil {
+		return err
+	}
+	userRoleID, err := ensureRole(ctx, db, "user")
+	if err != nil {
+		return err
 	}
 
-	// 3. Ambil role admin & user dengan validasi error yang aman
-	var adminRole models.Role
-	if err := config.DB.Where("name = ?", "admin").First(&adminRole).Error; err != nil {
-		fmt.Println("Gagal menemukan role admin:", err)
-		return
+	if err := replaceUserRoles(ctx, db, adminUserID, adminRoleID); err != nil {
+		return fmt.Errorf("hubungkan role admin ke superadmin: %w", err)
 	}
-
-	var userRole models.Role
-	if err := config.DB.Where("name = ?", "user").First(&userRole).Error; err != nil {
-		fmt.Println("Gagal menemukan role user:", err)
-		return
-	}
-
-	// 4. Hubungkan relasi user_roles (tabel pivot) menggunakan .Replace()
-	if err := config.DB.Model(&adminUser).Association("Roles").Replace(&adminRole); err != nil {
-		fmt.Println("Gagal menghubungkan role admin ke superadmin:", err)
-		return
-	}
-
-	if err := config.DB.Model(&regularUser).Association("Roles").Replace(&userRole); err != nil {
-		fmt.Println("Gagal menghubungkan role user ke warga_batam:", err)
-		return
+	if err := replaceUserRoles(ctx, db, regularUserID, userRoleID); err != nil {
+		return fmt.Errorf("hubungkan role user ke warga_batam: %w", err)
 	}
 
 	fmt.Println("Seeder Users & User_Roles berhasil dijalankan!")
+	return nil
 }

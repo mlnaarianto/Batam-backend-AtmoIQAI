@@ -15,7 +15,15 @@ func SetupRouter(r *gin.Engine) {
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "pong! Aeroclimate API is running smoothly."})
 	})
+
+	// Auth: /refresh dan /logout sengaja TANPA AuthMiddleware karena dipanggil
+	// saat access token sudah habis. Identitas dibuktikan oleh refresh token di cookie.
 	r.POST("/login", controllers.Login)
+	r.POST("/refresh", controllers.Refresh)
+	r.POST("/logout", controllers.Logout)
+
+	// BARU: file foto profil agar bisa ditampilkan lewat URL
+	r.Static("/uploads/profile", "./uploads/profile")
 
 	// Endpoint publik untuk View All / View Per ID data publik
 	r.GET("/api/public/weather-predictions", controllers.GetPublicWeatherPredictions())
@@ -33,6 +41,15 @@ func SetupRouter(r *gin.Engine) {
 				"message": "Selamat datang, " + username.(string) + "!",
 			})
 		})
+
+		// BARU: info lengkap user yang sedang login
+		protected.GET("/me", controllers.Me)
+
+		// BARU: profil sendiri (tanpa RequirePermission, ID selalu dari JWT)
+		protected.GET("/profile", controllers.GetProfile)
+		protected.PUT("/profile/password", controllers.ChangePassword)
+		protected.POST("/profile/photo", controllers.UploadProfilePhoto)
+		protected.DELETE("/profile/photo", controllers.DeleteProfilePhoto)
 	}
 
 	// =========================================================================
@@ -89,23 +106,23 @@ func SetupRouter(r *gin.Engine) {
 	// =========================================================================
 	// RUTE WEATHER PREDICTIONS (Akses Fleksibel Berdasarkan Auth & Controller Logic)
 	// =========================================================================
-	
-	// 1. Rute List Utama (Hanya butuh login, logika filter diserahkan cerdas ke controller)
+
+	// 1. Rute List Utama (Hanya butuh login, logika filter diserahkan ke controller)
 	r.GET(
-		"/api/admin/weather-predictions", 
-		middlewares.AuthMiddleware(), 
+		"/api/admin/weather-predictions",
+		middlewares.AuthMiddleware(),
 		controllers.GetWeatherPredictions(),
 	)
 
-	// 2. Rute Detail Berdasarkan ID Path Parameter (Memerlukan izin view-id)
+	// 2. Rute Detail Berdasarkan ID (Memerlukan izin view-id)
 	r.GET(
-		"/api/admin/weather-predictions/:id", 
-		middlewares.AuthMiddleware(), 
-		middlewares.RequirePermission("weather-predictions:view-id"), 
+		"/api/admin/weather-predictions/:id",
+		middlewares.AuthMiddleware(),
+		middlewares.RequirePermission("weather-predictions:view-id"),
 		controllers.GetWeatherPredictionByID(),
 	)
 
-	// 3. Rute untuk Modifikasi Data (Create, Update, Delete - Memerlukan izin manage-weather-predictions)
+	// 3. Modifikasi Data (Create, Update, Delete - Memerlukan izin manage-weather-predictions)
 	managePredictionGroup := r.Group("/api/admin")
 	managePredictionGroup.Use(middlewares.AuthMiddleware(), middlewares.RequirePermission("manage-weather-predictions"))
 	{

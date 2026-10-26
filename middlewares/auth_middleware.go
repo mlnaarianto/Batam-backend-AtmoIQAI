@@ -1,25 +1,32 @@
 package middlewares
 
 import (
+	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strings"
+
 	"weather-backend/config"
 	"weather-backend/models"
+	"weather-backend/repositories"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
-	
+	"github.com/google/uuid"
 )
 
-var JwtKey = []byte(getJwtSecret())
+var JwtKey []byte
 
-func getJwtSecret() string {
+// InitJWT dipanggil di main() SETELAH godotenv.Load().
+func InitJWT() error {
 	secret := os.Getenv("JWT_SECRET")
-	if secret == "" {
-		return "super-secret-key-weather-app-2026"
+	if len(secret) < 32 {
+		return errors.New("JWT_SECRET kosong atau kurang dari 32 karakter")
 	}
-	return secret
+	JwtKey = []byte(secret)
+	return nil
 }
 
 func AuthMiddleware() gin.HandlerFunc {
@@ -39,9 +46,14 @@ func AuthMiddleware() gin.HandlerFunc {
 		}
 
 		claims := jwt.MapClaims{}
-		token, err := jwt.ParseWithClaims(tokenString[1], claims, func(token *jwt.Token) (interface{}, error) {
-			return JwtKey, nil
-		})
+		token, err := jwt.ParseWithClaims(
+			tokenString[1],
+			claims,
+			func(token *jwt.Token) (interface{}, error) {
+				return JwtKey, nil
+			},
+			jwt.WithValidMethods([]string{"HS256"}), // tolak algoritma selain HS256
+		)
 
 		if err != nil || !token.Valid {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Token tidak valid atau kedaluwarsa"})
@@ -49,61 +61,44 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// --- BAGIAN YANG DITAMBAHKAN ---
 		// Set data dari JWT claims ke dalam Gin Context
 		c.Set("user_id", claims["user_id"])
 		c.Set("username", claims["username"])
-		c.Set("role", claims["role"]) // Sekalian simpan role untuk mempermudah pengecekan jika diperlukan nanti
-		// -------------------------------
+		c.Set("role", claims["role"])
 
 		c.Next()
 	}
 }
 
+// RequirePermission memeriksa permission langsung ke database (SQL murni),
+// memakai user_id dari JWT. Bypass admin ada di dalam query HasPermission.
 func RequirePermission(requiredPermission string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		username, exists := c.Get("username")
-		if !exists {
+		userIDVal, exists := c.Get("user_id")
+		if !exists || userIDVal == nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 			c.Abort()
 			return
 		}
 
-		var user models.User
-		err := config.DB.Preload("Roles").Preload("Roles.Permissions").Where("username = ?", username).First(&user).Error
+		parsed, err := uuid.Parse(fmt.Sprint(userIDVal))
 		if err != nil {
-			c.JSON(http.StatusForbidden, gin.H{"error": "User tidak ditemukan di database"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 			c.Abort()
 			return
 		}
 
-		isAdmin := false
-		for _, role := range user.Roles {
-			if role.Name == "admin" {
-				isAdmin = true
-				break
-			}
-		}
-
-		if isAdmin {
-			c.Next()
+		allowed, err := repositories.NewPermissionRepository(config.SQLDB).
+			HasPermission(c.Request.Context(), models.UUIDBinary(parsed), requiredPermission)
+		if err != nil {
+			// Ganti dengan config.Log (Zap) kalau mau.
+			log.Printf("RequirePermission: gagal cek permission %q untuk user %s: %v", requiredPermission, parsed, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Terjadi kesalahan server"})
+			c.Abort()
 			return
 		}
 
-		hasPermission := false
-		for _, role := range user.Roles {
-			for _, perm := range role.Permissions {
-				if perm.Name == requiredPermission {
-					hasPermission = true
-					break
-				}
-			}
-			if hasPermission {
-				break
-			}
-		}
-
-		if !hasPermission {
+		if !allowed {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Akses ditolak! Anda tidak memiliki izin."})
 			c.Abort()
 			return

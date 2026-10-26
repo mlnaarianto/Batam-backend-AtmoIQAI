@@ -1,9 +1,13 @@
 package controllers
 
 import (
+	"errors"
+	"net/http"
+
 	"weather-backend/config"
 	"weather-backend/helpers"
 	"weather-backend/models"
+	"weather-backend/repositories"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -19,67 +23,71 @@ func UpdateRolePermissions(c *gin.Context) {
 	var input struct {
 		PermissionIDs []string `json:"permission_ids"`
 	}
-
 	if err := c.ShouldBindJSON(&input); err != nil {
 		config.Log.Warn("Gagal bind JSON saat update permission role",
-			zap.String("role_id", roleIDStr),
-			zap.Error(err),
-		)
+			zap.String("role_id", roleIDStr), zap.Error(err))
 		helpers.ResponseBadRequest(c, gin.H{"error": "Data input tidak valid: " + err.Error()})
 		return
 	}
 
-	// Parse string UUID role dari URL parameter
 	parsedRoleID, err := uuid.Parse(roleIDStr)
 	if err != nil {
 		helpers.ResponseBadRequest(c, gin.H{"error": "Format UUID role tidak valid"})
 		return
 	}
+	roleID := models.UUIDBinary(parsedRoleID)
 
-	// 1. Cari role berdasarkan UUID (konversi ke models.UUIDBinary)
-	var role models.Role
-	if err := config.DB.First(&role, "id = ?", models.UUIDBinary(parsedRoleID)).Error; err != nil {
-		config.Log.Error("Role tidak ditemukan di database",
-			zap.String("role_id", roleIDStr),
-			zap.Error(err),
-		)
+	// UUID permission yang tidak valid atau duplikat dilewati
+	seen := map[uuid.UUID]bool{}
+	permIDs := make([]models.UUIDBinary, 0, len(input.PermissionIDs))
+	for _, s := range input.PermissionIDs {
+		p, err := uuid.Parse(s)
+		if err != nil || p == uuid.Nil || seen[p] {
+			continue
+		}
+		seen[p] = true
+		permIDs = append(permIDs, models.UUIDBinary(p))
+	}
+
+	ctx := c.Request.Context()
+	tx, err := config.SQLDB.BeginTx(ctx, nil)
+	if err != nil {
+		config.Log.Error("Gagal memulai transaksi update permission role", zap.Error(err))
+		helpers.ResponseInternalError(c, gin.H{"error": "Gagal memperbarui permission role"})
+		return
+	}
+	defer tx.Rollback() // no-op jika sudah Commit
+
+	repo := repositories.NewRBACRepository(tx)
+
+	roleName, err := repo.LockRole(ctx, roleID)
+	if errors.Is(err, repositories.ErrNotFound) {
 		helpers.ResponseNotFound(c, gin.H{"error": "Role tidak ditemukan"})
 		return
 	}
-
-	// 2. Konversi string UUID permission ke models.UUIDBinary
-	var permissionUUIDs []models.UUIDBinary
-	for _, idStr := range input.PermissionIDs {
-		if parsedPermID, err := uuid.Parse(idStr); err == nil {
-			permissionUUIDs = append(permissionUUIDs, models.UUIDBinary(parsedPermID))
-		}
+	if err != nil {
+		config.Log.Error("Gagal membaca role", zap.String("role_id", roleIDStr), zap.Error(err))
+		helpers.ResponseInternalError(c, gin.H{"error": "Gagal memperbarui permission role"})
+		return
 	}
 
-	// 3. Cari data Permission berdasarkan array UUIDBinary
-	var permissions []models.Permission
-	if len(permissionUUIDs) > 0 {
-		config.DB.Find(&permissions, "id IN ?", permissionUUIDs)
+	if err := repo.ReplaceRolePermissions(ctx, roleID, permIDs); err != nil {
+		config.Log.Error("Gagal mengganti permission role", zap.String("role_id", roleIDStr), zap.Error(err))
+		helpers.ResponseInternalError(c, gin.H{"error": "Gagal memperbarui permission role"})
+		return
 	}
-
-	// 4. Timpa/Ganti relasi many-to-many permissions milik role
-	if err := config.DB.Model(&role).Association("Permissions").Replace(&permissions); err != nil {
-		config.Log.Error("Gagal eksekusi GORM association replace permission",
-			zap.String("role_id", roleIDStr),
-			zap.Error(err),
-		)
+	if err := tx.Commit(); err != nil {
+		config.Log.Error("Gagal commit update permission role", zap.Error(err))
 		helpers.ResponseInternalError(c, gin.H{"error": "Gagal memperbarui permission role"})
 		return
 	}
 
 	config.Log.Info("Permission role berhasil diperbarui",
 		zap.String("role_id", roleIDStr),
-		zap.String("role_name", role.Name),
+		zap.String("role_name", roleName),
 		zap.Any("new_permission_ids", input.PermissionIDs),
 	)
-
-	helpers.ResponseOK(c, gin.H{
-		"message": "Permission role berhasil diperbarui",
-	})
+	helpers.ResponseOK(c, gin.H{"message": "Permission role berhasil diperbarui"})
 }
 
 // CreateRole membuat role baru
@@ -87,26 +95,26 @@ func UpdateRolePermissions(c *gin.Context) {
 // Body: { "name": "editor" }
 func CreateRole(c *gin.Context) {
 	var input struct {
-		Name string `json:"name" binding:"required"`
+		Name string `json:"name" binding:"required,max=100"`
 	}
-
 	if err := c.ShouldBindJSON(&input); err != nil {
 		helpers.ResponseBadRequest(c, gin.H{"error": "Data input tidak valid: " + err.Error()})
 		return
 	}
 
-	role := models.Role{
-		Name: input.Name,
+	repo := repositories.NewRBACRepository(config.SQLDB)
+	role, err := repo.CreateRole(c.Request.Context(), input.Name)
+	if repositories.IsDuplicateEntry(err) {
+		helpers.WriteJSON(c, http.StatusConflict, "Conflict", gin.H{"error": "Nama role sudah dipakai"})
+		return
 	}
-
-	if err := config.DB.Create(&role).Error; err != nil {
+	if err != nil {
 		config.Log.Error("Gagal membuat role baru", zap.Error(err))
-		helpers.ResponseInternalError(c, gin.H{"error": "Gagal membuat role, kemungkinan nama sudah dipakai"})
+		helpers.ResponseInternalError(c, gin.H{"error": "Gagal membuat role"})
 		return
 	}
 
 	config.Log.Info("Role baru berhasil dibuat", zap.String("role_name", role.Name))
-
 	helpers.ResponseOK(c, gin.H{
 		"message": "Role berhasil dibuat",
 		"data":    role,
@@ -124,25 +132,37 @@ func UpdateRole(c *gin.Context) {
 		helpers.ResponseBadRequest(c, gin.H{"error": "Format UUID role tidak valid"})
 		return
 	}
+	roleID := models.UUIDBinary(parsedRoleID)
 
 	var input struct {
-		Name string `json:"name" binding:"required"`
+		Name string `json:"name" binding:"required,max=100"`
 	}
-
 	if err := c.ShouldBindJSON(&input); err != nil {
 		helpers.ResponseBadRequest(c, gin.H{"error": "Data input tidak valid: " + err.Error()})
 		return
 	}
 
-	var role models.Role
-	if err := config.DB.First(&role, "id = ?", models.UUIDBinary(parsedRoleID)).Error; err != nil {
-		helpers.ResponseNotFound(c, gin.H{"error": "Role tidak ditemukan"})
+	ctx := c.Request.Context()
+	repo := repositories.NewRBACRepository(config.SQLDB)
+
+	if err := repo.UpdateRoleName(ctx, roleID, input.Name); err != nil {
+		if repositories.IsDuplicateEntry(err) {
+			helpers.WriteJSON(c, http.StatusConflict, "Conflict", gin.H{"error": "Nama role sudah dipakai"})
+			return
+		}
+		config.Log.Error("Gagal memperbarui role", zap.String("role_id", roleIDStr), zap.Error(err))
+		helpers.ResponseInternalError(c, gin.H{"error": "Gagal memperbarui role"})
 		return
 	}
 
-	role.Name = input.Name
-	if err := config.DB.Save(&role).Error; err != nil {
-		config.Log.Error("Gagal memperbarui role", zap.String("role_id", roleIDStr), zap.Error(err))
+	// Dibaca ulang: sekaligus memastikan role ada (UPDATE pada ID yang tidak ada tidak error)
+	role, err := repo.GetRole(ctx, roleID)
+	if errors.Is(err, repositories.ErrNotFound) {
+		helpers.ResponseNotFound(c, gin.H{"error": "Role tidak ditemukan"})
+		return
+	}
+	if err != nil {
+		config.Log.Error("Gagal membaca role setelah update", zap.Error(err))
 		helpers.ResponseInternalError(c, gin.H{"error": "Gagal memperbarui role"})
 		return
 	}
@@ -164,28 +184,31 @@ func DeleteRole(c *gin.Context) {
 		return
 	}
 
-	var role models.Role
-	if err := config.DB.First(&role, "id = ?", models.UUIDBinary(parsedRoleID)).Error; err != nil {
-		helpers.ResponseNotFound(c, gin.H{"error": "Role tidak ditemukan"})
-		return
-	}
-
-	// Bersihkan relasi many-to-many sebelum hapus, hindari FK constraint error
-	if err := config.DB.Model(&role).Association("Permissions").Clear(); err != nil {
-		config.Log.Error("Gagal membersihkan relasi permission sebelum hapus role", zap.Error(err))
+	ctx := c.Request.Context()
+	tx, err := config.SQLDB.BeginTx(ctx, nil)
+	if err != nil {
+		config.Log.Error("Gagal memulai transaksi hapus role", zap.Error(err))
 		helpers.ResponseInternalError(c, gin.H{"error": "Gagal menghapus role"})
 		return
 	}
+	defer tx.Rollback()
 
-	if err := config.DB.Delete(&role).Error; err != nil {
+	deleted, err := repositories.NewRBACRepository(tx).DeleteRole(ctx, models.UUIDBinary(parsedRoleID))
+	if err != nil {
 		config.Log.Error("Gagal menghapus role", zap.String("role_id", roleIDStr), zap.Error(err))
+		helpers.ResponseInternalError(c, gin.H{"error": "Gagal menghapus role"})
+		return
+	}
+	if !deleted {
+		helpers.ResponseNotFound(c, gin.H{"error": "Role tidak ditemukan"})
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		config.Log.Error("Gagal commit hapus role", zap.Error(err))
 		helpers.ResponseInternalError(c, gin.H{"error": "Gagal menghapus role"})
 		return
 	}
 
 	config.Log.Info("Role berhasil dihapus", zap.String("role_id", roleIDStr))
-
-	helpers.ResponseOK(c, gin.H{
-		"message": "Role berhasil dihapus",
-	})
+	helpers.ResponseOK(c, gin.H{"message": "Role berhasil dihapus"})
 }

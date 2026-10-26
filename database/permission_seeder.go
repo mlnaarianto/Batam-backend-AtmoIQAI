@@ -1,64 +1,53 @@
 package database
 
 import (
+	"context"
 	"fmt"
-	"weather-backend/config"
-	"weather-backend/models"
+
+	"weather-backend/repositories"
 )
 
-func SeedPermissions() {
-	// Permission granular untuk weather predictions & station/role lainnya
-	manageStationsPerm := models.Permission{Name: "manage-stations"}
-	
-	// PERUBAHAN: Mengubah permission weather menjadi lebih granular (view-all & view-id)
-	viewAllWeatherPerm := models.Permission{Name: "weather-predictions:view-all"}
-	viewIDWeatherPerm := models.Permission{Name: "weather-predictions:view-id"}
-	manageWeatherPerm := models.Permission{Name: "manage-weather-predictions"}
-
-	viewWeatherPerm := models.Permission{Name: "view-weather"}
-	manageRolesPerm := models.Permission{Name: "manage-roles"}
-	manageRolePermissionsPerm := models.Permission{Name: "manage-role-permissions"}
-	manageUserRolesPerm := models.Permission{Name: "manage-user-roles"}
-
-	// Eksekusi FirstOrCreate
-	config.DB.FirstOrCreate(&manageStationsPerm, models.Permission{Name: "manage-stations"})
-	config.DB.FirstOrCreate(&viewAllWeatherPerm, models.Permission{Name: "weather-predictions:view-all"})
-	config.DB.FirstOrCreate(&viewIDWeatherPerm, models.Permission{Name: "weather-predictions:view-id"})
-	config.DB.FirstOrCreate(&manageWeatherPerm, models.Permission{Name: "manage-weather-predictions"})
-	config.DB.FirstOrCreate(&viewWeatherPerm, models.Permission{Name: "view-weather"})
-	config.DB.FirstOrCreate(&manageRolesPerm, models.Permission{Name: "manage-roles"})
-	config.DB.FirstOrCreate(&manageRolePermissionsPerm, models.Permission{Name: "manage-role-permissions"})
-	config.DB.FirstOrCreate(&manageUserRolesPerm, models.Permission{Name: "manage-user-roles"})
-
-	var adminRole models.Role
-	if err := config.DB.Where("name = ?", "admin").First(&adminRole).Error; err != nil {
-		fmt.Println("Gagal menemukan role admin:", err)
-		return
+func SeedPermissions(ctx context.Context, db repositories.DBTX) error {
+	adminPermissions := []string{
+		"manage-stations",
+		"weather-predictions:view-all",
+		"weather-predictions:view-id",
+		"manage-weather-predictions",
+		"view-weather",
+		"manage-roles",
+		"manage-role-permissions",
+		"manage-user-roles",
 	}
 
-	var userRole models.Role
-	if err := config.DB.Where("name = ?", "user").First(&userRole).Error; err != nil {
-		fmt.Println("Gagal menemukan role user:", err)
-		return
+	// User biasa secara default hanya view-weather dan view-id
+	// (atau sesuai pengaturan admin nantinya di halaman RBAC).
+	userPermissions := []string{
+		"view-weather",
+		"weather-predictions:view-id",
 	}
 
-	// Admin diberikan hak akses penuh termasuk view-all
-	config.DB.Model(&adminRole).Association("Permissions").Replace([]models.Permission{
-		manageStationsPerm,
-		viewAllWeatherPerm,
-		viewIDWeatherPerm,
-		manageWeatherPerm,
-		viewWeatherPerm,
-		manageRolesPerm,
-		manageRolePermissionsPerm,
-		manageUserRolesPerm,
-	})
-	
-	// User biasa secara default hanya diberikan hak akses view-id (atau sesuai pengaturan admin nantinya di RBAC)
-	config.DB.Model(&userRole).Association("Permissions").Replace([]models.Permission{
-		viewWeatherPerm,
-		viewIDWeatherPerm,
-	})
+	for _, name := range adminPermissions {
+		if _, err := ensurePermission(ctx, db, name); err != nil {
+			return err
+		}
+	}
+
+	adminRoleID, err := ensureRole(ctx, db, "admin")
+	if err != nil {
+		return err
+	}
+	userRoleID, err := ensureRole(ctx, db, "user")
+	if err != nil {
+		return err
+	}
+
+	if err := replaceRolePermissions(ctx, db, adminRoleID, adminPermissions); err != nil {
+		return fmt.Errorf("set permission admin: %w", err)
+	}
+	if err := replaceRolePermissions(ctx, db, userRoleID, userPermissions); err != nil {
+		return fmt.Errorf("set permission user: %w", err)
+	}
 
 	fmt.Println("Seeder Permissions & Role_Permissions berhasil dijalankan!")
+	return nil
 }

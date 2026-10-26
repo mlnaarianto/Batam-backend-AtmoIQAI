@@ -3,23 +3,43 @@ package controllers
 import (
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"net/url"
 	"strconv"
 	"time"
+
 	"weather-backend/config"
 	"weather-backend/models"
+	"weather-backend/repositories"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 )
 
-// GET /api/admin/stations
+// actorID membaca user_id dari JWT (disimpan middleware sebagai string).
+func actorID(c *gin.Context) *models.UUIDBinary {
+	raw, _ := c.Get("user_id")
+	s, ok := raw.(string)
+	if !ok {
+		return nil
+	}
+	p, err := uuid.Parse(s)
+	if err != nil {
+		return nil
+	}
+	id := models.UUIDBinary(p)
+	return &id
+}
+
+// GET /api/admin/stations  dan  /api/public/stations
 func GetStations() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var stations []models.Station
-		if err := config.DB.Find(&stations).Error; err != nil {
+		stations, err := repositories.NewStationRepository(config.SQLDB).List(c.Request.Context())
+		if err != nil {
+			config.Log.Error("Gagal mengambil data stations", zap.Error(err))
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal mengambil data stations"})
 			return
 		}
@@ -30,16 +50,20 @@ func GetStations() gin.HandlerFunc {
 // GET /api/admin/stations/:id
 func GetStationByID() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		idStr := c.Param("id")
-		parsedID, err := uuid.Parse(idStr)
+		parsedID, err := uuid.Parse(c.Param("id"))
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"message": "ID tidak valid"})
 			return
 		}
 
-		var station models.Station
-		if err := config.DB.Where("id = ?", models.UUIDBinary(parsedID)).First(&station).Error; err != nil {
+		station, err := repositories.NewStationRepository(config.SQLDB).Get(c.Request.Context(), models.UUIDBinary(parsedID))
+		if errors.Is(err, repositories.ErrNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"message": "Station tidak ditemukan"})
+			return
+		}
+		if err != nil {
+			config.Log.Error("Gagal mengambil station", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal mengambil station"})
 			return
 		}
 		c.JSON(http.StatusOK, station)
@@ -47,13 +71,26 @@ func GetStationByID() gin.HandlerFunc {
 }
 
 type StationInput struct {
-	StationCode  string  `json:"station_code" binding:"required"`
-	StationName  string  `json:"station_name" binding:"required"`
+	StationCode  string  `json:"station_code" binding:"required,max=100"`
+	StationName  string  `json:"station_name" binding:"required,max=255"`
 	Latitude     float64 `json:"latitude" binding:"required"`
 	Longitude    float64 `json:"longitude" binding:"required"`
 	Region       *string `json:"region"`
 	DataSource   *string `json:"data_source"`
 	StatusActive *bool   `json:"status_active"`
+}
+
+func (in StationInput) toWrite(actor *models.UUIDBinary) repositories.StationWrite {
+	return repositories.StationWrite{
+		StationCode:  in.StationCode,
+		StationName:  in.StationName,
+		Latitude:     in.Latitude,
+		Longitude:    in.Longitude,
+		Region:       in.Region,
+		DataSource:   in.DataSource,
+		StatusActive: in.StatusActive,
+		ActorID:      actor,
+	}
 }
 
 // POST /api/admin/stations
@@ -65,30 +102,15 @@ func CreateStation() gin.HandlerFunc {
 			return
 		}
 
-		userIDRaw, _ := c.Get("user_id")
-		userID, ok := userIDRaw.(models.UUIDBinary)
-
-		statusActive := true
-		if input.StatusActive != nil {
-			statusActive = *input.StatusActive
+		station, err := repositories.NewStationRepository(config.SQLDB).
+			Create(c.Request.Context(), input.toWrite(actorID(c)))
+		if repositories.IsDuplicateEntry(err) {
+			c.JSON(http.StatusConflict, gin.H{"message": "Kode station sudah dipakai"})
+			return
 		}
-
-		station := models.Station{
-			StationCode:  input.StationCode,
-			StationName:  input.StationName,
-			Latitude:     input.Latitude,
-			Longitude:    input.Longitude,
-			Region:       input.Region,
-			DataSource:   input.DataSource,
-			StatusActive: statusActive,
-		}
-		if ok {
-			station.CreatedBy = &userID
-			station.UpdatedBy = &userID
-		}
-
-		if err := config.DB.Create(&station).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal membuat station", "error": err.Error()})
+		if err != nil {
+			config.Log.Error("Gagal membuat station", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal membuat station"})
 			return
 		}
 		c.JSON(http.StatusCreated, station)
@@ -98,18 +120,12 @@ func CreateStation() gin.HandlerFunc {
 // PUT /api/admin/stations/:id
 func UpdateStation() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		idStr := c.Param("id")
-		parsedID, err := uuid.Parse(idStr)
+		parsedID, err := uuid.Parse(c.Param("id"))
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"message": "ID tidak valid"})
 			return
 		}
-
-		var station models.Station
-		if err := config.DB.Where("id = ?", models.UUIDBinary(parsedID)).First(&station).Error; err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"message": "Station tidak ditemukan"})
-			return
-		}
+		id := models.UUIDBinary(parsedID)
 
 		var input StationInput
 		if err := c.ShouldBindJSON(&input); err != nil {
@@ -117,24 +133,32 @@ func UpdateStation() gin.HandlerFunc {
 			return
 		}
 
-		userIDRaw, _ := c.Get("user_id")
-		userID, ok := userIDRaw.(models.UUIDBinary)
+		ctx := c.Request.Context()
+		repo := repositories.NewStationRepository(config.SQLDB)
 
-		station.StationCode = input.StationCode
-		station.StationName = input.StationName
-		station.Latitude = input.Latitude
-		station.Longitude = input.Longitude
-		station.Region = input.Region
-		station.DataSource = input.DataSource
-		if input.StatusActive != nil {
-			station.StatusActive = *input.StatusActive
-		}
-		if ok {
-			station.UpdatedBy = &userID
+		if _, err := repo.Get(ctx, id); errors.Is(err, repositories.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"message": "Station tidak ditemukan"})
+			return
+		} else if err != nil {
+			config.Log.Error("Gagal membaca station", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal update station"})
+			return
 		}
 
-		if err := config.DB.Save(&station).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal update station", "error": err.Error()})
+		if err := repo.Update(ctx, id, input.toWrite(actorID(c))); err != nil {
+			if repositories.IsDuplicateEntry(err) {
+				c.JSON(http.StatusConflict, gin.H{"message": "Kode station sudah dipakai"})
+				return
+			}
+			config.Log.Error("Gagal update station", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal update station"})
+			return
+		}
+
+		station, err := repo.Get(ctx, id)
+		if err != nil {
+			config.Log.Error("Gagal membaca station setelah update", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal update station"})
 			return
 		}
 		c.JSON(http.StatusOK, station)
@@ -144,19 +168,24 @@ func UpdateStation() gin.HandlerFunc {
 // DELETE /api/admin/stations/:id
 func DeleteStation() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		idStr := c.Param("id")
-		parsedID, err := uuid.Parse(idStr)
+		parsedID, err := uuid.Parse(c.Param("id"))
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"message": "ID tidak valid"})
 			return
 		}
 
-		result := config.DB.Where("id = ?", models.UUIDBinary(parsedID)).Delete(&models.Station{})
-		if result.Error != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal hapus station (kemungkinan masih dipakai weather_predictions)", "error": result.Error.Error()})
+		deleted, err := repositories.NewStationRepository(config.SQLDB).
+			Delete(c.Request.Context(), models.UUIDBinary(parsedID))
+		if repositories.IsForeignKeyViolation(err) {
+			c.JSON(http.StatusConflict, gin.H{"message": "Station tidak bisa dihapus karena masih dipakai weather_predictions"})
 			return
 		}
-		if result.RowsAffected == 0 {
+		if err != nil {
+			config.Log.Error("Gagal hapus station", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal hapus station"})
+			return
+		}
+		if !deleted {
 			c.JSON(http.StatusNotFound, gin.H{"message": "Station tidak ditemukan"})
 			return
 		}
@@ -234,7 +263,7 @@ func GeocodeSearch() gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal membuat request geocoding"})
 			return
 		}
-		
+
 		// Menggunakan User-Agent khusus yang valid agar tidak kena blokir 403 Forbidden
 		req.Header.Set("User-Agent", "WeatherBackendBatamApp/1.0 (maulana.dev@proton.me)")
 
@@ -298,7 +327,7 @@ func ReverseGeocode() gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "Gagal membuat request reverse geocoding"})
 			return
 		}
-		
+
 		// Menggunakan User-Agent khusus yang valid agar tidak kena blokir 403 Forbidden
 		req.Header.Set("User-Agent", "WeatherBackendBatamApp/1.0 (maulana.dev@proton.me)")
 

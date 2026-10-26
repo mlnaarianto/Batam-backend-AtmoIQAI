@@ -2,34 +2,32 @@ package controllers
 
 import (
 	"net/http"
+
 	"weather-backend/config"
-	"weather-backend/models"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 // GET /api/admin/dashboard-stats
 func GetDashboardStats() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var totalStations int64
-		var totalPredictions int64
+		ctx := c.Request.Context()
+		var totalStations, totalPredictions int64
 
-		// Hitung jumlah stasiun aktif/total di database
-		if err := config.DB.Model(&models.Station{}).Count(&totalStations).Error; err != nil {
-			totalStations = 0
+		if err := config.SQLDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM stations`).Scan(&totalStations); err != nil {
+			config.Log.Error("Gagal menghitung stations", zap.Error(err))
 		}
-
-		// Hitung jumlah total data prediksi cuaca AI yang tersimpan
-		if err := config.DB.Model(&models.WeatherPrediction{}).Count(&totalPredictions).Error; err != nil {
-			totalPredictions = 0
+		if err := config.SQLDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM weather_predictions`).Scan(&totalPredictions); err != nil {
+			config.Log.Error("Gagal menghitung weather_predictions", zap.Error(err))
 		}
 
 		c.JSON(http.StatusOK, gin.H{
-			"total_stations":      totalStations,
-			"total_predictions":   totalPredictions,
-			"ai_server_status":    "Aktif",
-			"database_status":     "Terhubung",
-			"message":             "Statistik dashboard berhasil dimuat",
+			"total_stations":    totalStations,
+			"total_predictions": totalPredictions,
+			"ai_server_status":  "Aktif",
+			"database_status":   "Terhubung",
+			"message":           "Statistik dashboard berhasil dimuat",
 		})
 	}
 }

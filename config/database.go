@@ -1,53 +1,52 @@
 package config
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"os"
+	"time"
 
-	"weather-backend/models"
-
-	"github.com/joho/godotenv"
-	"gorm.io/driver/mysql"
-	"gorm.io/gorm"
+	_ "github.com/go-sql-driver/mysql"
 )
 
-var DB *gorm.DB
+// SQLDB adalah satu-satunya koneksi database (SQL murni).
+var SQLDB *sql.DB
 
-func ConnectDB() {
-	// Memuat file .env
-	err := godotenv.Load()
-	if err != nil {
-		log.Println("Peringatan: File .env tidak ditemukan, menggunakan environment sistem default.")
-	}
-
-	// Menyusun string DSN secara dinamis dari file .env
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
+func buildDSN() string {
+	// loc=UTC: waktu dikirim dan dibaca dalam UTC supaya expired_at dan revoked_at konsisten
+	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=UTC",
 		os.Getenv("DB_USER"),
 		os.Getenv("DB_PASSWORD"),
 		os.Getenv("DB_HOST"),
 		os.Getenv("DB_PORT"),
 		os.Getenv("DB_NAME"),
 	)
+}
 
-	var dbErr error
-	DB, dbErr = gorm.Open(mysql.Open(dsn), &gorm.Config{})
-	if dbErr != nil {
-		log.Fatalf("Gagal terhubung ke database MySQL: %v", dbErr)
-	}
+func ConnectDB() {
+	var err error
 
-	// Auto Migrate Model (Otomatis membuat tabel dengan format UUID)
-	err = DB.AutoMigrate(
-		&models.User{},
-		&models.Role{},
-		&models.Permission{},
-		&models.PersonalAccessToken{},
-		&models.Station{},           // <--- Tambahkan di sini
-		&models.WeatherPrediction{}, // <--- Tambahkan setelah Station
-	)
+	SQLDB, err = sql.Open("mysql", buildDSN())
 	if err != nil {
-		log.Fatalf("Gagal melakukan Auto Migrate database: %v", err)
+		log.Fatalf("Gagal membuka koneksi database: %v", err)
+	}
+	SQLDB.SetMaxOpenConns(25)
+	SQLDB.SetMaxIdleConns(10)
+	SQLDB.SetConnMaxLifetime(30 * time.Minute)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := SQLDB.PingContext(ctx); err != nil {
+		log.Fatalf("Ping database gagal: %v", err)
 	}
 
-	fmt.Println("Berhasil terhubung ke database MySQL & migrasi otomatis selesai!")
+	fmt.Println("Berhasil terhubung ke database MySQL!")
+}
+
+func CloseDB() {
+	if SQLDB != nil {
+		_ = SQLDB.Close()
+	}
 }

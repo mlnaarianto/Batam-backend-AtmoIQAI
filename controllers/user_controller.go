@@ -1,81 +1,90 @@
 package controllers
 
 import (
+	"errors"
+
 	"weather-backend/config"
 	"weather-backend/helpers"
 	"weather-backend/models"
+	"weather-backend/repositories"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
+// UpdateUserRoles mengganti/menimpa seluruh role milik seorang user
+// Endpoint: PUT /api/admin/users/:id/roles
+// Body: { "role_ids": ["uuid-1", "uuid-2", ...] }
 func UpdateUserRoles(c *gin.Context) {
 	userIDStr := c.Param("id")
 
 	var input struct {
 		RoleIDs []string `json:"role_ids"`
 	}
-
 	if err := c.ShouldBindJSON(&input); err != nil {
 		config.Log.Warn("Gagal bind JSON saat update role",
-			zap.String("user_id", userIDStr),
-			zap.Error(err),
-		)
+			zap.String("user_id", userIDStr), zap.Error(err))
 		helpers.ResponseBadRequest(c, gin.H{"error": "Data input tidak valid: " + err.Error()})
 		return
 	}
 
-	// Parse string UUID dari URL parameter ke tipe uuid.UUID
 	parsedUserID, err := uuid.Parse(userIDStr)
 	if err != nil {
 		helpers.ResponseBadRequest(c, gin.H{"error": "Format UUID user tidak valid"})
 		return
 	}
+	userID := models.UUIDBinary(parsedUserID)
 
-	// 1. Cari user berdasarkan UUID objek
-	// PENTING: konversi ke models.UUIDBinary supaya cocok dengan tipe kolom binary(16) di DB
-	var user models.User
-	if err := config.DB.First(&user, "id = ?", models.UUIDBinary(parsedUserID)).Error; err != nil {
-		config.Log.Error("Pengguna tidak ditemukan di database",
-			zap.String("user_id", userIDStr),
-			zap.Error(err),
-		)
+	// UUID role yang tidak valid atau duplikat dilewati
+	seen := map[uuid.UUID]bool{}
+	roleIDs := make([]models.UUIDBinary, 0, len(input.RoleIDs))
+	for _, s := range input.RoleIDs {
+		p, err := uuid.Parse(s)
+		if err != nil || p == uuid.Nil || seen[p] {
+			continue
+		}
+		seen[p] = true
+		roleIDs = append(roleIDs, models.UUIDBinary(p))
+	}
+
+	ctx := c.Request.Context()
+	tx, err := config.SQLDB.BeginTx(ctx, nil)
+	if err != nil {
+		config.Log.Error("Gagal memulai transaksi update role user", zap.Error(err))
+		helpers.ResponseInternalError(c, gin.H{"error": "Gagal memperbarui role pengguna"})
+		return
+	}
+	defer tx.Rollback() // no-op jika sudah Commit
+
+	repo := repositories.NewRBACRepository(tx)
+
+	username, err := repo.LockUser(ctx, userID)
+	if errors.Is(err, repositories.ErrNotFound) {
 		helpers.ResponseNotFound(c, gin.H{"error": "Pengguna tidak ditemukan"})
 		return
 	}
-
-	// 2. Konversi string UUID role ke objek models.UUIDBinary (bukan uuid.UUID biasa)
-	var roleUUIDs []models.UUIDBinary
-	for _, idStr := range input.RoleIDs {
-		if parsedRoleID, err := uuid.Parse(idStr); err == nil {
-			roleUUIDs = append(roleUUIDs, models.UUIDBinary(parsedRoleID))
-		}
+	if err != nil {
+		config.Log.Error("Gagal membaca user", zap.String("user_id", userIDStr), zap.Error(err))
+		helpers.ResponseInternalError(c, gin.H{"error": "Gagal memperbarui role pengguna"})
+		return
 	}
 
-	// 3. Cari data Role berdasarkan array UUIDBinary
-	var roles []models.Role
-	if len(roleUUIDs) > 0 {
-		config.DB.Find(&roles, "id IN ?", roleUUIDs)
+	if err := repo.ReplaceUserRoles(ctx, userID, roleIDs); err != nil {
+		config.Log.Error("Gagal mengganti role user", zap.String("user_id", userIDStr), zap.Error(err))
+		helpers.ResponseInternalError(c, gin.H{"error": "Gagal memperbarui role pengguna"})
+		return
 	}
-
-	// 4. Timpa/Ganti relasi many-to-many roles milik user
-	if err := config.DB.Model(&user).Association("Roles").Replace(&roles); err != nil {
-		config.Log.Error("Gagal eksekusi GORM association replace role",
-			zap.String("user_id", userIDStr),
-			zap.Error(err),
-		)
+	if err := tx.Commit(); err != nil {
+		config.Log.Error("Gagal commit update role user", zap.Error(err))
 		helpers.ResponseInternalError(c, gin.H{"error": "Gagal memperbarui role pengguna"})
 		return
 	}
 
 	config.Log.Info("Role pengguna berhasil diperbarui",
 		zap.String("user_id", userIDStr),
-		zap.String("username", user.Username),
+		zap.String("username", username),
 		zap.Any("new_role_ids", input.RoleIDs),
 	)
-
-	helpers.ResponseOK(c, gin.H{
-		"message": "Role pengguna berhasil diperbarui",
-	})
+	helpers.ResponseOK(c, gin.H{"message": "Role pengguna berhasil diperbarui"})
 }
