@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"weather-backend/models"
-
-	"github.com/google/uuid"
 )
 
 // Versi model yang disembunyikan dari endpoint publik.
@@ -120,13 +118,13 @@ const selectPrediction = `
 func scanPrediction(sc interface{ Scan(...any) error }) (*PredictionItem, error) {
 	var p PredictionItem
 	var (
-		uID                          *models.UUIDBinary
-		uUsername, uName             *string
-		sID, sCreatedBy, sUpdatedBy  *models.UUIDBinary
-		sCode, sName                 *string
-		sLat, sLon                   *float64
-		sRegion, sSource             *string
-		sActive                      *bool
+		uID                         *models.UUIDBinary
+		uUsername, uName            *string
+		sID, sCreatedBy, sUpdatedBy *models.UUIDBinary
+		sCode, sName                *string
+		sLat, sLon                  *float64
+		sRegion, sSource            *string
+		sActive                     *bool
 	)
 	err := sc.Scan(
 		&p.ID, &p.UserID, &p.StationID, &p.PredictionDate,
@@ -198,7 +196,7 @@ func (r *PredictionRepository) Get(ctx context.Context, id models.UUIDBinary) (*
 }
 
 func (r *PredictionRepository) Create(ctx context.Context, in PredictionWrite) (*PredictionItem, error) {
-	id := models.UUIDBinary(uuid.New()) // hook BeforeCreate GORM tidak ada lagi
+	id := models.NewUUIDBinary() // UUID v7
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO weather_predictions
 		  (id, user_id, station_id, prediction_date, temperature, humidity, rainfall, air_pressure,

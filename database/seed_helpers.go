@@ -7,8 +7,6 @@ import (
 
 	"weather-backend/models"
 	"weather-backend/repositories"
-
-	"github.com/google/uuid"
 )
 
 // ensureByName: buat baris (id, name) jika belum ada, lalu kembalikan id-nya.
@@ -22,7 +20,7 @@ func ensureByName(ctx context.Context, db repositories.DBTX, table, name string)
 		`INSERT INTO %s (id, name)
 		 SELECT ?, ? FROM DUAL
 		 WHERE NOT EXISTS (SELECT 1 FROM %s WHERE name = ?)`, table, table)
-	if _, err := db.ExecContext(ctx, insert, models.UUIDBinary(uuid.New()), name, name); err != nil {
+	if _, err := db.ExecContext(ctx, insert, models.NewUUIDBinary(), name, name); err != nil {
 		return models.UUIDBinary{}, fmt.Errorf("insert %s '%s': %w", table, name, err)
 	}
 
@@ -48,7 +46,7 @@ func ensureUser(ctx context.Context, db repositories.DBTX, username, name, email
 		SELECT ?, ?, ?, ?, ? FROM DUAL
 		WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = ?)`
 	if _, err := db.ExecContext(ctx, insert,
-		models.UUIDBinary(uuid.New()), username, name, email, passwordHash, username); err != nil {
+		models.NewUUIDBinary(), username, name, email, passwordHash, username); err != nil {
 		return models.UUIDBinary{}, fmt.Errorf("insert user '%s': %w", username, err)
 	}
 

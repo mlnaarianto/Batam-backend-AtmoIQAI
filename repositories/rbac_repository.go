@@ -10,7 +10,6 @@ import (
 	"weather-backend/models"
 
 	"github.com/go-sql-driver/mysql"
-	"github.com/google/uuid"
 )
 
 // ============================================================================
@@ -198,7 +197,7 @@ func (r *RBACRepository) LockRole(ctx context.Context, id models.UUIDBinary) (st
 // ============================================================================
 
 func (r *RBACRepository) CreateRole(ctx context.Context, name string) (*RoleItem, error) {
-	id := models.UUIDBinary(uuid.New()) // hook BeforeCreate GORM tidak ada lagi, UUID dibuat di sini
+	id := models.NewUUIDBinary() // UUID v7
 	if _, err := r.db.ExecContext(ctx, `INSERT INTO roles (id, name) VALUES (?, ?)`, id, name); err != nil {
 		return nil, err
 	}

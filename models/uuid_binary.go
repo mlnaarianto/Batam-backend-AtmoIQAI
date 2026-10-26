@@ -4,13 +4,19 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
+
 	"github.com/google/uuid"
 )
 
 // UUIDBinary adalah tipe kustom agar uuid.UUID bisa klop dengan kolom BINARY(16) MySQL
 type UUIDBinary uuid.UUID
 
-// --- TAMBAHAN: bikin UUIDBinary di-encode/decode sebagai string UUID biasa di JSON ---
+// NewUUIDBinary membuat UUID v7 (berurutan waktu) untuk primary key.
+func NewUUIDBinary() UUIDBinary {
+	return UUIDBinary(uuid.Must(uuid.NewV7()))
+}
+
+// --- UUIDBinary di-encode/decode sebagai string UUID biasa di JSON ---
 
 func (u UUIDBinary) MarshalJSON() ([]byte, error) {
 	return json.Marshal(uuid.UUID(u).String())
@@ -37,6 +43,9 @@ func (u *UUIDBinary) UnmarshalJSON(data []byte) error {
 func helperScan(u *UUIDBinary, value interface{}) error {
 	var bytes []byte
 	switch v := value.(type) {
+	case nil:
+		*u = UUIDBinary(uuid.Nil)
+		return nil
 	case []byte:
 		bytes = v
 	case string:

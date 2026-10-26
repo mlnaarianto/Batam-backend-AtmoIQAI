@@ -2,6 +2,7 @@ package routes
 
 import (
 	"net/http"
+
 	"weather-backend/controllers"
 	"weather-backend/middlewares"
 
@@ -10,124 +11,76 @@ import (
 
 func SetupRouter(r *gin.Engine) {
 	// =========================================================================
-	// RUTE PUBLIK (Tanpa Autentikasi)
+	// RUTE PUBLIK (tanpa autentikasi)
 	// =========================================================================
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "pong! Aeroclimate API is running smoothly."})
 	})
 
-	// Auth: /refresh dan /logout sengaja TANPA AuthMiddleware karena dipanggil
-	// saat access token sudah habis. Identitas dibuktikan oleh refresh token di cookie.
+	// /refresh dan /logout sengaja TANPA AuthMiddleware karena dipanggil saat
+	// access token sudah habis. Identitas dibuktikan oleh refresh token di cookie.
 	r.POST("/login", controllers.Login)
 	r.POST("/refresh", controllers.Refresh)
 	r.POST("/logout", controllers.Logout)
 
-	// BARU: file foto profil agar bisa ditampilkan lewat URL
+	// File foto profil agar bisa ditampilkan lewat URL
 	r.Static("/uploads/profile", "./uploads/profile")
 
-	// Endpoint publik untuk View All / View Per ID data publik
+	// Data publik (View All / View per ID)
 	r.GET("/api/public/weather-predictions", controllers.GetPublicWeatherPredictions())
 	r.GET("/api/public/stations", controllers.GetStations())
 
 	// =========================================================================
-	// RUTE TERPROTEKSI - Hanya butuh login
+	// RUTE TERPROTEKSI: semua di bawah /api wajib login.
+	// Akses ditentukan oleh permission per rute, bukan oleh prefix URL.
 	// =========================================================================
-	protected := r.Group("/api")
-	protected.Use(middlewares.AuthMiddleware())
-	{
-		protected.GET("/dashboard", func(c *gin.Context) {
-			username, _ := c.Get("username")
-			c.JSON(http.StatusOK, gin.H{
-				"message": "Selamat datang, " + username.(string) + "!",
-			})
-		})
+	api := r.Group("/api", middlewares.AuthMiddleware())
 
-		// BARU: info lengkap user yang sedang login
-		protected.GET("/me", controllers.Me)
+	perm := middlewares.RequirePermission
 
-		// BARU: profil sendiri (tanpa RequirePermission, ID selalu dari JWT)
-		protected.GET("/profile", controllers.GetProfile)
-		protected.PUT("/profile/password", controllers.ChangePassword)
-		protected.POST("/profile/photo", controllers.UploadProfilePhoto)
-		protected.DELETE("/profile/photo", controllers.DeleteProfilePhoto)
-	}
+	// --- Hanya butuh login ---------------------------------------------------
+	api.GET("/dashboard", func(c *gin.Context) {
+		username, _ := c.Get("username")
+		name, _ := username.(string)
+		c.JSON(http.StatusOK, gin.H{"message": "Selamat datang, " + name + "!"})
+	})
+	api.GET("/me", controllers.Me)
 
-	// =========================================================================
-	// RUTE ADMIN UMUM (Dashboard Admin & RBAC)
-	// =========================================================================
-	adminRoutes := r.Group("/api/admin")
-	adminRoutes.Use(middlewares.AuthMiddleware(), middlewares.RequirePermission("view-weather"))
-	{
-		adminRoutes.GET("/dashboard-stats", controllers.GetDashboardStats())
-		adminRoutes.GET("/rbac", controllers.GetRBACData)
-	}
+	// Profil sendiri (ID selalu dari JWT, tanpa RequirePermission)
+	api.GET("/profile", controllers.GetProfile)
+	api.PUT("/profile/password", controllers.ChangePassword)
+	api.POST("/profile/photo", controllers.UploadProfilePhoto)
+	api.DELETE("/profile/photo", controllers.DeleteProfilePhoto)
 
-	// =========================================================================
-	// RUTE MANAJEMEN USER ROLES
-	// =========================================================================
-	userRoleRoutes := r.Group("/api/admin/users")
-	userRoleRoutes.Use(middlewares.AuthMiddleware(), middlewares.RequirePermission("manage-user-roles"))
-	{
-		userRoleRoutes.PUT("/:id/roles", controllers.UpdateUserRoles)
-	}
+	// --- Dashboard & RBAC (view-weather) --------------------------------------
+	api.GET("/dashboard-stats", perm("view-weather"), controllers.GetDashboardStats())
+	api.GET("/rbac", perm("view-weather"), controllers.GetRBACData)
 
-	// =========================================================================
-	// RUTE MANAJEMEN ROLE & PERMISSION
-	// =========================================================================
-	roleRoutes := r.Group("/api/admin/roles")
-	roleRoutes.Use(middlewares.AuthMiddleware(), middlewares.RequirePermission("manage-roles"))
-	{
-		roleRoutes.POST("", controllers.CreateRole)
-		roleRoutes.PUT("/:id", controllers.UpdateRole)
-		roleRoutes.DELETE("/:id", controllers.DeleteRole)
-	}
+	// --- Role user ------------------------------------------------------------
+	api.PUT("/users/:id/roles", perm("manage-user-roles"), controllers.UpdateUserRoles)
 
-	rolePermRoutes := r.Group("/api/admin/roles")
-	rolePermRoutes.Use(middlewares.AuthMiddleware(), middlewares.RequirePermission("manage-role-permissions"))
-	{
-		rolePermRoutes.PUT("/:id/permissions", controllers.UpdateRolePermissions)
-	}
+	// --- Role & permission ----------------------------------------------------
+	api.POST("/roles", perm("manage-roles"), controllers.CreateRole)
+	api.PUT("/roles/:id", perm("manage-roles"), controllers.UpdateRole)
+	api.DELETE("/roles/:id", perm("manage-roles"), controllers.DeleteRole)
+	api.PUT("/roles/:id/permissions", perm("manage-role-permissions"), controllers.UpdateRolePermissions)
 
-	// =========================================================================
-	// RUTE MANAJEMEN STATION
-	// =========================================================================
-	stationRoutes := r.Group("/api/admin")
-	stationRoutes.Use(middlewares.AuthMiddleware(), middlewares.RequirePermission("manage-stations"))
-	{
-		stationRoutes.GET("/stations", controllers.GetStations())
-		stationRoutes.GET("/stations/:id", controllers.GetStationByID())
-		stationRoutes.POST("/stations", controllers.CreateStation())
-		stationRoutes.PUT("/stations/:id", controllers.UpdateStation())
-		stationRoutes.DELETE("/stations/:id", controllers.DeleteStation())
-		stationRoutes.GET("/stations/geocode", controllers.GeocodeSearch())
-		stationRoutes.GET("/stations/reverse-geocode", controllers.ReverseGeocode())
-	}
+	// --- Station (manage-stations) --------------------------------------------
+	api.GET("/stations", perm("manage-stations"), controllers.GetStations())
+	api.GET("/stations/geocode", perm("manage-stations"), controllers.GeocodeSearch())
+	api.GET("/stations/reverse-geocode", perm("manage-stations"), controllers.ReverseGeocode())
+	api.GET("/stations/:id", perm("manage-stations"), controllers.GetStationByID())
+	api.POST("/stations", perm("manage-stations"), controllers.CreateStation())
+	api.PUT("/stations/:id", perm("manage-stations"), controllers.UpdateStation())
+	api.DELETE("/stations/:id", perm("manage-stations"), controllers.DeleteStation())
 
-	// =========================================================================
-	// RUTE WEATHER PREDICTIONS (Akses Fleksibel Berdasarkan Auth & Controller Logic)
-	// =========================================================================
-
-	// 1. Rute List Utama (Hanya butuh login, logika filter diserahkan ke controller)
-	r.GET(
-		"/api/admin/weather-predictions",
-		middlewares.AuthMiddleware(),
-		controllers.GetWeatherPredictions(),
-	)
-
-	// 2. Rute Detail Berdasarkan ID (Memerlukan izin view-id)
-	r.GET(
-		"/api/admin/weather-predictions/:id",
-		middlewares.AuthMiddleware(),
-		middlewares.RequirePermission("weather-predictions:view-id"),
-		controllers.GetWeatherPredictionByID(),
-	)
-
-	// 3. Modifikasi Data (Create, Update, Delete - Memerlukan izin manage-weather-predictions)
-	managePredictionGroup := r.Group("/api/admin")
-	managePredictionGroup.Use(middlewares.AuthMiddleware(), middlewares.RequirePermission("manage-weather-predictions"))
-	{
-		managePredictionGroup.POST("/weather-predictions", controllers.CreateWeatherPrediction())
-		managePredictionGroup.PUT("/weather-predictions/:id", controllers.UpdateWeatherPrediction())
-		managePredictionGroup.DELETE("/weather-predictions/:id", controllers.DeleteWeatherPrediction())
-	}
+	// --- Weather predictions ----------------------------------------------------
+	// List: hanya login, filter per user diatur di controller
+	api.GET("/weather-predictions", controllers.GetWeatherPredictions())
+	// Detail: butuh izin view-id
+	api.GET("/weather-predictions/:id", perm("weather-predictions:view-id"), controllers.GetWeatherPredictionByID())
+	// Create, update, delete: butuh izin manage-weather-predictions
+	api.POST("/weather-predictions", perm("manage-weather-predictions"), controllers.CreateWeatherPrediction())
+	api.PUT("/weather-predictions/:id", perm("manage-weather-predictions"), controllers.UpdateWeatherPrediction())
+	api.DELETE("/weather-predictions/:id", perm("manage-weather-predictions"), controllers.DeleteWeatherPrediction())
 }

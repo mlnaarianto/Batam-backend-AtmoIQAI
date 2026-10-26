@@ -8,7 +8,6 @@ import (
 	"weather-backend/models"
 
 	"github.com/go-sql-driver/mysql"
-	"github.com/google/uuid"
 )
 
 // StationItem: bentuk JSON sama dengan models.Station lama (tanpa creator/updater).
@@ -89,7 +88,7 @@ func (r *StationRepository) Get(ctx context.Context, id models.UUIDBinary) (*Sta
 }
 
 func (r *StationRepository) Create(ctx context.Context, in StationWrite) (*StationItem, error) {
-	id := models.UUIDBinary(uuid.New()) // hook BeforeCreate GORM tidak ada lagi
+	id := models.NewUUIDBinary() // UUID v7
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO stations
 		  (id, station_code, station_name, latitude, longitude, region, data_source, status_active, created_by, updated_by)

@@ -35,7 +35,7 @@ func clearRefreshCookie(c *gin.Context) { setRefreshCookie(c, "", -1) }
 
 func newRefreshRecord(c *gin.Context, userID, familyID models.UUIDBinary, hash string) *repositories.RefreshToken {
 	return &repositories.RefreshToken{
-		ID:        models.UUIDBinary(uuid.New()),
+		ID:        models.NewUUIDBinary(),
 		UserID:    userID,
 		FamilyID:  familyID,
 		TokenHash: hash,
@@ -108,7 +108,7 @@ func Login(c *gin.Context) {
 		return
 	}
 
-	familyID := models.UUIDBinary(uuid.New()) // satu login = satu family baru
+	familyID := models.NewUUIDBinary() // satu login = satu family baru
 	if err := tokens.Create(ctx, newRefreshRecord(c, user.ID, familyID, hash)); err != nil {
 		config.Log.Error("Gagal menyimpan refresh token", zap.Error(err))
 		helpers.ResponseInternalError(c, gin.H{"error": "Gagal menyimpan sesi login"})
