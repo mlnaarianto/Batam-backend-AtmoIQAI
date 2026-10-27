@@ -65,9 +65,9 @@ func NewTokenRepository(db DBTX) *TokenRepository { return &TokenRepository{db: 
 //
 //  3. ExpiredAt disimpan dalam UTC. Ini penting karena:
 //     - Waktu mungkin dibandingkan dengan time.Now().UTC() saat
-//       refresh (lihat controller).
+//     refresh (lihat controller).
 //     - Menghindari perbedaan zona waktu antar server (mis. server
-//       di WIB vs DB di UTC).
+//     di WIB vs DB di UTC).
 //
 //  4. Token yang dikirim (t.TokenHash) HARUS sudah berupa hash —
 //     hashing dilakukan di layer service/controller sebelum masuk
@@ -164,13 +164,14 @@ func (r *TokenRepository) Revoke(ctx context.Context, id models.UUIDBinary) erro
 //     perangkat yang sama.
 //
 // Kapan dipakai:
+//
 //  1. REUSE DETECTION (paling penting):
 //     Jika refresh token yang dikirim ternyata SUDAH dicabut, itu
 //     indikasi kuat token tersebut dicuri (penyerang memakai token
 //     yang sudah dirotasi). Dalam kasus ini kita cabut SELURUH family,
 //     sehingga:
-//       - Penyerang tidak bisa lanjut memakai token curian.
-//       - Pemilik sah terpaksa login ulang.
+//     - Penyerang tidak bisa lanjut memakai token curian.
+//     - Pemilik sah terpaksa login ulang.
 //     Ini lebih aman daripada hanya menolak satu token.
 //
 //  2. LOGOUT:
@@ -194,6 +195,9 @@ func (r *TokenRepository) RevokeFamily(ctx context.Context, familyID models.UUID
 //   - Setelah ganti password: untuk "memaksa logout" semua sesi lain
 //     yang mungkin dibuat dengan password lama. Ini praktik standar
 //     keamanan.
+//   - Setelah admin mereset password user: semua sesi lama user
+//     tersebut harus mati, supaya hanya password sementara yang
+//     berlaku dan user dipaksa menggantinya.
 //   - Skenario "logout dari semua perangkat" jika nanti ditambahkan.
 //
 // Filter `type = 'refresh'` penting: jika nanti tabel

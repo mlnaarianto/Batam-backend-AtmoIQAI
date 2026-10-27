@@ -72,7 +72,14 @@ func (r *ProfileRepository) GetPasswordHash(ctx context.Context, id models.UUIDB
 	return hash, err
 }
 
-// UpdatePassword menyimpan hash password baru untuk user.
+// UpdatePassword menyimpan hash password baru untuk user dan
+// mematikan penanda must_change_password (set ke 0).
+//
+// Dipakai saat user mengganti password SENDIRI. Karena user baru saja
+// membuktikan dirinya dengan memasukkan password lama dan menetapkan
+// yang baru, kewajiban "wajib ganti password" (akibat akun baru dibuat
+// atau di-reset admin) otomatis selesai. Tanpa ini, middleware akan
+// terus memblokir user walau password sudah diganti.
 //
 // Catatan:
 //   - Parameter `hash` HARUS sudah berupa hash bcrypt (bukan password
@@ -83,7 +90,8 @@ func (r *ProfileRepository) GetPasswordHash(ctx context.Context, id models.UUIDB
 //     keberadaan user adalah tanggung jawab pemanggil (biasanya lewat
 //     GetPasswordHash terlebih dahulu di dalam transaksi yang sama).
 func (r *ProfileRepository) UpdatePassword(ctx context.Context, id models.UUIDBinary, hash string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE users SET password = ? WHERE id = ?`, hash, id)
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE users SET password = ?, must_change_password = 0 WHERE id = ?`, hash, id)
 	return err
 }
 
