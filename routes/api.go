@@ -42,32 +42,45 @@ func SetupRouter(r *gin.Engine) {
 	// Alias agar penulisan permission lebih singkat.
 	perm := middlewares.RequirePermission
 
-	// --- Hanya butuh login ---------------------------------------------------
+	// --- Sesi & profil sendiri (hanya butuh login) ---------------------------
+	// Profil sendiri: ID user selalu diambil dari JWT, jadi tidak perlu RequirePermission.
 	api.GET("/dashboard", func(c *gin.Context) {
 		username, _ := c.Get("username")
 		name, _ := username.(string)
 		c.JSON(http.StatusOK, gin.H{"message": "Selamat datang, " + name + "!"})
 	})
 	api.GET("/me", controllers.Me)
-
-	// Profil sendiri: ID user selalu diambil dari JWT, jadi tidak perlu RequirePermission.
 	api.GET("/profile", controllers.GetProfile)
 	api.PUT("/profile/password", controllers.ChangePassword)
 	api.POST("/profile/photo", controllers.UploadProfilePhoto)
 	api.DELETE("/profile/photo", controllers.DeleteProfilePhoto)
 
-	// --- Dashboard & RBAC (butuh view-weather) -------------------------------
+	// --- Dashboard (butuh view-weather) --------------------------------------
 	api.GET("/dashboard-stats", perm("view-weather"), controllers.GetDashboardStats())
+
+	// =========================================================================
+	// RBAC: siapa boleh apa
+	// Controller: role_controller.go (CRUD role) dan rbac_controller.go
+	// (matriks RBAC + assign relasi).
+	// =========================================================================
+
+	// Data matriks RBAC (roles, permissions, users) dalam satu response.
 	api.GET("/rbac", perm("view-weather"), controllers.GetRBACData)
 
-	// --- Role user -----------------------------------------------------------
-	api.PUT("/users/:id/roles", perm("manage-user-roles"), controllers.UpdateUserRoles)
-
-	// --- Role & permission ---------------------------------------------------
+	// CRUD role.
 	api.POST("/roles", perm("manage-roles"), controllers.CreateRole)
 	api.PUT("/roles/:id", perm("manage-roles"), controllers.UpdateRole)
 	api.DELETE("/roles/:id", perm("manage-roles"), controllers.DeleteRole)
+
+	// Assign relasi: role <-> permission, user <-> role.
 	api.PUT("/roles/:id/permissions", perm("manage-role-permissions"), controllers.UpdateRolePermissions)
+	api.PUT("/users/:id/roles", perm("manage-user-roles"), controllers.UpdateUserRoles)
+
+	// =========================================================================
+	// MANAJEMEN USER (oleh admin)
+	// Controller: user_controller.go
+	// Rute akan ditambahkan di sini: list, create, reset password.
+	// =========================================================================
 
 	// --- Station (butuh manage-stations) -------------------------------------
 	api.GET("/stations", perm("manage-stations"), controllers.GetStations())
