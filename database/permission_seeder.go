@@ -50,6 +50,8 @@ func SeedPermissions(ctx context.Context, db repositories.DBTX) error {
 		"manage-roles",
 		"manage-role-permissions",
 		"manage-user-roles",
+		"manage-users",        // baru: lihat daftar user dan buat user
+		"reset-user-password", // baru: reset password user lain
 	}
 
 	// Daftar permission untuk role "user" (bawaan).

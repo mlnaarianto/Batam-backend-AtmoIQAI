@@ -33,19 +33,25 @@ import (
 //     bisa NULL (user belum unggah foto). Dengan tipe ini kita bisa
 //     membedakan "tidak ada foto" (Valid=false) dari string kosong.
 //
+//   - MustChangePassword : true jika user wajib mengganti password
+//     (mis. setelah dibuat atau di-reset oleh admin). Dipakai di
+//     response login/refresh//me dan oleh middleware untuk memblokir
+//     route lain sampai password diganti.
+//
 //   - Roles     : slice nama role (string), bukan struct. Ini cukup
 //     untuk kebutuhan:
 //     * Menyisipkan claim "role" di JWT (satu role utama).
 //     * Cek "apakah user admin?" lewat helper services.RoleOf.
 //     Tidak perlu detail RoleItem lengkap di sini.
 type AuthUser struct {
-	ID        models.UUIDBinary
-	Username  string
-	Name      string
-	Email     string
-	Password  string
-	PhotoPath sql.NullString
-	Roles     []string
+	ID                 models.UUIDBinary
+	Username           string
+	Name               string
+	Email              string
+	Password           string
+	PhotoPath          sql.NullString
+	MustChangePassword bool
+	Roles              []string
 }
 
 // AuthRepository menangani query user untuk kebutuhan autentikasi.
@@ -73,7 +79,7 @@ func NewAuthRepository(db DBTX) *AuthRepository { return &AuthRepository{db: db}
 // Nilai `identifier` dikirim dua kali karena ada dua placeholder (satu
 // untuk username, satu untuk email).
 func (r *AuthRepository) FindByUsernameOrEmail(ctx context.Context, identifier string) (*AuthUser, error) {
-	const q = `SELECT id, username, name, email, password, photo_path
+	const q = `SELECT id, username, name, email, password, photo_path, must_change_password
 	           FROM users
 	           WHERE username = ? OR email = ?
 	           LIMIT 1`
@@ -95,7 +101,10 @@ func (r *AuthRepository) FindByUsernameOrEmail(ctx context.Context, identifier s
 //     ingin token baru mencerminkan role yang berlaku SEKARANG,
 //     bukan role yang berlaku saat login dulu.
 func (r *AuthRepository) FindByID(ctx context.Context, id models.UUIDBinary) (*AuthUser, error) {
-	const q = `SELECT id, username, name, email, password, photo_path FROM users WHERE id = ? LIMIT 1`
+	const q = `SELECT id, username, name, email, password, photo_path, must_change_password
+	           FROM users
+	           WHERE id = ?
+	           LIMIT 1`
 	return r.findOne(ctx, q, id)
 }
 
@@ -103,7 +112,8 @@ func (r *AuthRepository) FindByID(ctx context.Context, id models.UUIDBinary) (*A
 // lalu melengkapinya dengan daftar roles.
 //
 // Alur:
-//  1. Scan satu baris ke AuthUser (termasuk password hash & photo_path).
+//  1. Scan satu baris ke AuthUser (termasuk password hash, photo_path,
+//     dan must_change_password).
 //  2. Jika tidak ada baris, terjemahkan sql.ErrNoRows menjadi ErrNotFound
 //     (error sentinel aplikasi), supaya controller tidak perlu tahu
 //     detail driver database.
@@ -127,7 +137,7 @@ func (r *AuthRepository) FindByID(ctx context.Context, id models.UUIDBinary) (*A
 func (r *AuthRepository) findOne(ctx context.Context, query string, args ...any) (*AuthUser, error) {
 	var u AuthUser
 	err := r.db.QueryRowContext(ctx, query, args...).
-		Scan(&u.ID, &u.Username, &u.Name, &u.Email, &u.Password, &u.PhotoPath)
+		Scan(&u.ID, &u.Username, &u.Name, &u.Email, &u.Password, &u.PhotoPath, &u.MustChangePassword)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
