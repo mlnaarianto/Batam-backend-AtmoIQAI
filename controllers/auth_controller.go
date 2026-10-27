@@ -44,13 +44,13 @@ func setRefreshCookie(c *gin.Context, value string, maxAge int) {
 func clearRefreshCookie(c *gin.Context) { setRefreshCookie(c, "", -1) }
 
 // newRefreshRecord membuat record refresh token yang siap disimpan ke database.
-// - ID: identifier unik record.
-// - FamilyID: ID "keluarga" token; semua token hasil rotasi dari satu login
-//   berbagi FamilyID yang sama, sehingga bisa dicabut bersamaan saat
-//   terdeteksi penyalahgunaan.
-// - TokenHash: hash SHA256 dari token mentah (token asli tidak pernah disimpan).
-// - UserAgent & IPAddress: disimpan untuk audit/forensik.
-// - ExpiredAt: kapan token ini kedaluwarsa (UTC).
+//   - ID: identifier unik record.
+//   - FamilyID: ID "keluarga" token; semua token hasil rotasi dari satu login
+//     berbagi FamilyID yang sama, sehingga bisa dicabut bersamaan saat
+//     terdeteksi penyalahgunaan.
+//   - TokenHash: hash SHA256 dari token mentah (token asli tidak pernah disimpan).
+//   - UserAgent & IPAddress: disimpan untuk audit/forensik.
+//   - ExpiredAt: kapan token ini kedaluwarsa (UTC).
 func newRefreshRecord(c *gin.Context, userID, familyID models.UUIDBinary, hash string) *repositories.RefreshToken {
 	return &repositories.RefreshToken{
 		ID:        models.NewUUIDBinary(),
@@ -73,14 +73,15 @@ func respondSession(c *gin.Context, u *repositories.AuthUser, accessToken string
 	}
 
 	helpers.ResponseOK(c, gin.H{
-		"id":         uuid.UUID(u.ID).String(),
-		"message":    message,
-		"token":      accessToken,
-		"expires_at": exp.Unix(),
-		"username":   u.Username,
-		"name":       u.Name,
-		"role":       services.RoleOf(u.Roles),
-		"photo_url":  photoURL,
+		"id":                   uuid.UUID(u.ID).String(),
+		"message":              message,
+		"token":                accessToken,
+		"expires_at":           exp.Unix(),
+		"username":             u.Username,
+		"name":                 u.Name,
+		"role":                 services.RoleOf(u.Roles),
+		"photo_url":            photoURL,
+		"must_change_password": u.MustChangePassword,
 	})
 }
 
@@ -315,11 +316,12 @@ func Me(c *gin.Context) {
 	}
 
 	helpers.ResponseOK(c, gin.H{
-		"id":        uuid.UUID(user.ID).String(),
-		"username":  user.Username,
-		"name":      user.Name,
-		"email":     profile.Email,
-		"role":      services.RoleOf(user.Roles),
-		"photo_url": photoURL(profile.PhotoPath),
+		"id":                   uuid.UUID(user.ID).String(),
+		"username":             user.Username,
+		"name":                 user.Name,
+		"email":                profile.Email,
+		"role":                 services.RoleOf(user.Roles),
+		"photo_url":            photoURL(profile.PhotoPath),
+		"must_change_password": user.MustChangePassword,
 	})
 }
