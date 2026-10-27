@@ -104,7 +104,7 @@ func Login(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	users := repositories.NewUserRepository(config.SQLDB)
+	users := repositories.NewAuthRepository(config.SQLDB)
 	tokens := repositories.NewTokenRepository(config.SQLDB)
 
 	user, err := users.FindByUsernameOrEmail(ctx, input.Username)
@@ -216,7 +216,7 @@ func Refresh(c *gin.Context) {
 	}
 
 	// Ambil data user terbaru (mis. role bisa saja berubah sejak token dibuat).
-	user, err := repositories.NewUserRepository(config.SQLDB).FindByID(ctx, old.UserID)
+	user, err := repositories.NewAuthRepository(config.SQLDB).FindByID(ctx, old.UserID)
 	if err != nil {
 		helpers.ResponseUnauthorized(c, gin.H{"error": "User tidak ditemukan"})
 		return
@@ -290,7 +290,7 @@ func Me(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	user, err := repositories.NewUserRepository(config.SQLDB).FindByID(ctx, userID)
+	user, err := repositories.NewAuthRepository(config.SQLDB).FindByID(ctx, userID)
 	if errors.Is(err, repositories.ErrNotFound) {
 		helpers.ResponseUnauthorized(c, gin.H{"error": "User tidak ditemukan"})
 		return

@@ -35,8 +35,8 @@ import (
 //
 //   - Roles     : slice nama role (string), bukan struct. Ini cukup
 //     untuk kebutuhan:
-//       * Menyisipkan claim "role" di JWT (satu role utama).
-//       * Cek "apakah user admin?" lewat helper services.RoleOf.
+//     * Menyisipkan claim "role" di JWT (satu role utama).
+//     * Cek "apakah user admin?" lewat helper services.RoleOf.
 //     Tidak perlu detail RoleItem lengkap di sini.
 type AuthUser struct {
 	ID        models.UUIDBinary
@@ -48,11 +48,12 @@ type AuthUser struct {
 	Roles     []string
 }
 
-// UserRepository menangani query user untuk kebutuhan autentikasi.
-// Operasi lain (update password, foto, dsb.) ada di ProfileRepository.
-type UserRepository struct{ db DBTX }
+// AuthRepository menangani query user untuk kebutuhan autentikasi.
+// Operasi lain (update password, foto, dsb.) ada di ProfileRepository,
+// sedangkan manajemen user oleh admin ada di UserRepository.
+type AuthRepository struct{ db DBTX }
 
-func NewUserRepository(db DBTX) *UserRepository { return &UserRepository{db: db} }
+func NewAuthRepository(db DBTX) *AuthRepository { return &AuthRepository{db: db} }
 
 // FindByUsernameOrEmail mencari user berdasarkan username ATAU email.
 //
@@ -71,7 +72,7 @@ func NewUserRepository(db DBTX) *UserRepository { return &UserRepository{db: db}
 //
 // Nilai `identifier` dikirim dua kali karena ada dua placeholder (satu
 // untuk username, satu untuk email).
-func (r *UserRepository) FindByUsernameOrEmail(ctx context.Context, identifier string) (*AuthUser, error) {
+func (r *AuthRepository) FindByUsernameOrEmail(ctx context.Context, identifier string) (*AuthUser, error) {
 	const q = `SELECT id, username, name, email, password, photo_path
 	           FROM users
 	           WHERE username = ? OR email = ?
@@ -93,7 +94,7 @@ func (r *UserRepository) FindByUsernameOrEmail(ctx context.Context, identifier s
 //   - Karena roles adalah bagian dari klaim JWT; saat refresh, kita
 //     ingin token baru mencerminkan role yang berlaku SEKARANG,
 //     bukan role yang berlaku saat login dulu.
-func (r *UserRepository) FindByID(ctx context.Context, id models.UUIDBinary) (*AuthUser, error) {
+func (r *AuthRepository) FindByID(ctx context.Context, id models.UUIDBinary) (*AuthUser, error) {
 	const q = `SELECT id, username, name, email, password, photo_path FROM users WHERE id = ? LIMIT 1`
 	return r.findOne(ctx, q, id)
 }
@@ -123,7 +124,7 @@ func (r *UserRepository) FindByID(ctx context.Context, id models.UUIDBinary) (*A
 //   - Pastikan AuthUser TIDAK PERNAH di-serialize langsung ke JSON
 //     response; controller harus memilih field yang perlu dikirim
 //     (biasanya lewat respondSession).
-func (r *UserRepository) findOne(ctx context.Context, query string, args ...any) (*AuthUser, error) {
+func (r *AuthRepository) findOne(ctx context.Context, query string, args ...any) (*AuthUser, error) {
 	var u AuthUser
 	err := r.db.QueryRowContext(ctx, query, args...).
 		Scan(&u.ID, &u.Username, &u.Name, &u.Email, &u.Password, &u.PhotoPath)
@@ -149,8 +150,8 @@ func (r *UserRepository) findOne(ctx context.Context, query string, args ...any)
 //
 //   - Hanya kolom `r.name` yang diambil. Kita tidak butuh ID, timestamp,
 //     atau permission di sini — pemanggil hanya butuh nama role untuk:
-//       * Menyusun klaim JWT "role".
-//       * Cek "apakah user admin?" lewat services.RoleOf.
+//     * Menyusun klaim JWT "role".
+//     * Cek "apakah user admin?" lewat services.RoleOf.
 //     Jika suatu saat butuh detail role, gunakan RBACRepository.
 //
 //   - Tidak ada `ORDER BY`. Urutan role tidak bermakna di sini; RoleOf
@@ -168,7 +169,7 @@ func (r *UserRepository) findOne(ctx context.Context, query string, args ...any)
 //     memperlakukan nil sama seperti slice kosong ("tidak ada role").
 //     Jika nanti method ini dipakai untuk response JSON, inisialisasi
 //     ke `[]string{}` agar JSON-nya `[]`, bukan `null`.
-func (r *UserRepository) rolesOf(ctx context.Context, userID models.UUIDBinary) ([]string, error) {
+func (r *AuthRepository) rolesOf(ctx context.Context, userID models.UUIDBinary) ([]string, error) {
 	const q = `SELECT r.name
 	           FROM user_roles ur
 	           JOIN roles r ON r.id = ur.role_id
