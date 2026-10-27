@@ -14,19 +14,46 @@ import (
 	"go.uber.org/zap"
 )
 
+// Permission khusus yang menentukan apakah user boleh melihat prediksi
+// milik SEMUA user. Tanpa permission ini, user hanya boleh melihat
+// prediksi miliknya sendiri — lihat GetWeatherPredictions & GetWeatherPredictionByID.
 const permViewAllPredictions = "weather-predictions:view-all"
 
+// parseBinaryUUID adalah shortcut untuk mengubah string UUID menjadi
+// models.UUIDBinary (tipe yang dipakai di seluruh repository).
+// Jika string bukan UUID valid, error dari uuid.Parse diteruskan ke pemanggil
+// agar handler bisa membalas 400 dengan pesan yang sesuai konteks.
 func parseBinaryUUID(s string) (models.UUIDBinary, error) {
 	p, err := uuid.Parse(s)
 	return models.UUIDBinary(p), err
 }
 
-// GET /api/public/weather-predictions (Publik / Tanpa Login)
-// Hanya data publik murni. Data hasil AI yang dibuat saat user LOGIN
-// (model_version "lstm-enso-v2-30years") dan data dummy seeder ("lstm-v0.1-dummy")
-// tidak ditampilkan di sini.
+// =============================================================================
+// LIST PREDIKSI
+// =============================================================================
+
+// GetPublicWeatherPredictions mengembalikan daftar prediksi cuaca untuk
+// endpoint PUBLIK (tanpa login).
+//
+// Endpoint: GET /api/public/weather-predictions
+//
+// Kenapa harus dipisah dari GetWeatherPredictions?
+// Karena endpoint ini tidak punya konteks user (tidak ada JWT), kita tidak
+// bisa memeriksa permission. Untuk mencegah data internal bocor, repository
+// diberi flag PublicOnly=true yang di dalamnya memfilter:
+//
+//   - Data AI yang dihasilkan saat user login (model_version "lstm-enso-v2-30years")
+//   - Data dummy hasil seeder (model_version "lstm-v0.1-dummy")
+//
+// Dengan begitu, endpoint publik hanya menampilkan data yang memang layak
+// untuk publik (mis. prediksi referensi/umum), bukan seluruh isi tabel.
+//
+// Filter opsional `?station_id=` memungkinkan frontend menampilkan
+// prediksi untuk satu stasiun saja.
 func GetPublicWeatherPredictions() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Flag PublicOnly WAJIB true di endpoint ini. Jangan pernah diset false
+		// di sini karena endpoint ini terbuka tanpa autentikasi.
 		f := repositories.PredictionFilter{PublicOnly: true}
 
 		if s := c.Query("station_id"); s != "" {
@@ -48,20 +75,47 @@ func GetPublicWeatherPredictions() gin.HandlerFunc {
 	}
 }
 
-// GET /api/admin/weather-predictions
-// Akses ditentukan oleh permission "weather-predictions:view-all":
-//   - Punya permission itu -> lihat SEMUA data (query ?user_id= boleh dipakai sebagai filter).
-//   - Tidak punya          -> hanya data milik user_id sendiri, query ?user_id= DIABAIKAN.
+// GetWeatherPredictions mengembalikan daftar prediksi dengan aturan
+// visibilitas berdasarkan permission "weather-predictions:view-all".
+//
+// Endpoint: GET /api/weather-predictions (butuh login, tanpa RequirePermission
+// di routes.go karena aturan aksesnya lebih halus — ditangani di sini).
+//
+// Aturan visibilitas:
+//
+//  1. User PUNYA permission view-all:
+//     - Boleh melihat prediksi SEMUA user.
+//     - Query ?user_id=... boleh dipakai sebagai filter tambahan
+//       (mis. admin ingin fokus ke satu user tertentu).
+//
+//  2. User TIDAK punya permission view-all:
+//     - Hanya boleh melihat prediksi MILIKNYA sendiri.
+//     - Query ?user_id=... SENGAJA DIABAIKAN. Jika tetap diproses,
+//       user bisa memakai ?user_id=<uuid orang lain> untuk mengintip
+//       data user lain (IDOR).
+//
+// Filter lain yang selalu dihormati (selama data memang milik user yang
+// berhak): ?id=, ?station_id=.
+//
+// Catatan: filter `?id=` ada di sini (bukan di endpoint terpisah) agar
+// frontend bisa melakukan "View per ID" lewat list endpoint yang sama.
+// Namun endpoint GET /:id tetap disediakan untuk kebutuhan detail
+// (lihat GetWeatherPredictionByID).
 func GetWeatherPredictions() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx := c.Request.Context()
 
+		// actorID mengembalikan nil kalau user_id tidak ada / bukan string /
+		// bukan UUID. Ini bisa terjadi jika middleware gagal mengisi context.
+		// Anggap sebagai akses ditolak untuk berjaga-jaga.
 		uid := actorID(c)
 		if uid == nil {
 			c.JSON(http.StatusForbidden, gin.H{"message": "Akses ditolak"})
 			return
 		}
 
+		// Cek apakah user berhak melihat semua data. HasPermission melakukan
+		// bypass admin di dalam query-nya, jadi admin otomatis canViewAll=true.
 		canViewAll, err := repositories.NewPermissionRepository(config.SQLDB).
 			HasPermission(ctx, *uid, permViewAllPredictions)
 		if err != nil {
@@ -72,6 +126,7 @@ func GetWeatherPredictions() gin.HandlerFunc {
 
 		f := repositories.PredictionFilter{}
 		if canViewAll {
+			// User istimewa: ?user_id= dipakai sebagai filter opsional.
 			if s := c.Query("user_id"); s != "" {
 				id, err := parseBinaryUUID(s)
 				if err != nil {
@@ -81,10 +136,12 @@ func GetWeatherPredictions() gin.HandlerFunc {
 				f.UserID = &id
 			}
 		} else {
-			f.UserID = uid // dikunci ke diri sendiri
+			// User biasa: PAKSA filter ke dirinya sendiri, abaikan ?user_id=.
+			// Ini kunci anti-IDOR pada level list.
+			f.UserID = uid
 		}
 
-		// View Per ID lewat query ?id=xxx
+		// Filter opsional ?id= untuk kebutuhan "View per ID" dari list.
 		if s := c.Query("id"); s != "" {
 			id, err := parseBinaryUUID(s)
 			if err != nil {
@@ -94,6 +151,7 @@ func GetWeatherPredictions() gin.HandlerFunc {
 			f.ID = &id
 		}
 
+		// Filter opsional ?station_id= untuk melihat prediksi per stasiun.
 		if s := c.Query("station_id"); s != "" {
 			id, err := parseBinaryUUID(s)
 			if err != nil {
@@ -113,9 +171,21 @@ func GetWeatherPredictions() gin.HandlerFunc {
 	}
 }
 
-// GET /api/admin/weather-predictions/:id
-// Tanpa "weather-predictions:view-all", hanya boleh melihat detail miliknya sendiri
-// (mencegah IDOR: menebak UUID untuk mengintip data orang lain).
+// GetWeatherPredictionByID mengembalikan detail satu prediksi berdasarkan ID.
+//
+// Endpoint: GET /api/weather-predictions/:id (butuh permission
+// "weather-predictions:view-id" di routes.go).
+//
+// Kenapa masih ada pengecekan kepemilikan di sini?
+// Karena permission "view-id" hanya menjawab "apakah user boleh memanggil
+// endpoint ini", BUKAN "apakah user boleh melihat data ID ini". Tanpa
+// pengecekan tambahan, siapa pun yang punya permission view-id bisa menebak
+// UUID prediksi user lain dan melihat datanya — inilah celah IDOR klasik
+// (Insecure Direct Object Reference).
+//
+// Aturan:
+//   - canViewAll=true  -> boleh lihat semua ID.
+//   - canViewAll=false -> hanya boleh jika prediction.UserID == user sendiri.
 func GetWeatherPredictionByID() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx := c.Request.Context()
@@ -126,6 +196,8 @@ func GetWeatherPredictionByID() gin.HandlerFunc {
 			return
 		}
 
+		// Ambil data dulu. Jika tidak ada, langsung 404 — tidak perlu lanjut
+		// cek permission karena tidak ada yang bisa dibocorkan.
 		prediction, err := repositories.NewPredictionRepository(config.SQLDB).Get(ctx, id)
 		if errors.Is(err, repositories.ErrNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"message": "Weather prediction tidak ditemukan"})
@@ -142,6 +214,7 @@ func GetWeatherPredictionByID() gin.HandlerFunc {
 			c.JSON(http.StatusForbidden, gin.H{"message": "Akses ditolak"})
 			return
 		}
+
 		canViewAll, err := repositories.NewPermissionRepository(config.SQLDB).
 			HasPermission(ctx, *uid, permViewAllPredictions)
 		if err != nil {
@@ -149,6 +222,10 @@ func GetWeatherPredictionByID() gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "Terjadi kesalahan server"})
 			return
 		}
+
+		// Inti anti-IDOR: kalau tidak punya view-all, hanya boleh akses
+		// miliknya sendiri. Perhatikan kita membandingkan UserID hasil query,
+		// bukan input dari user — jadi tidak bisa diakali lewat parameter.
 		if !canViewAll && prediction.UserID != *uid {
 			c.JSON(http.StatusForbidden, gin.H{"message": "Anda tidak memiliki akses ke data ini"})
 			return
@@ -158,11 +235,27 @@ func GetWeatherPredictionByID() gin.HandlerFunc {
 	}
 }
 
-// WeatherPredictionInput
+// =============================================================================
+// INPUT & KONVERSI
+// =============================================================================
+
+// WeatherPredictionInput adalah payload untuk create/update prediksi.
 //
-// CATATAN soal binding:"required" pada field numerik (float64): validator menganggap
-// nilai NOL sebagai "kosong", sehingga Rainfall=0.0 (tidak hujan, nilai sah) akan ditolak.
-// Karena itu "required" hanya dipasang pada field string yang memang tidak boleh kosong.
+// JEBAKAN PENTING soal binding:"required" pada float64:
+// validator Go menganggap angka 0 sebagai "kosong". Jadi jika Rainfall
+// diberi tag binding:"required", nilai 0.0 (artinya "tidak hujan" dan
+// itu nilai yang SAH) akan ditolak sebagai input tidak valid.
+//
+// Karena itu:
+//   - Field string yang wajib (UserID, StationID, PredictionDate,
+//     StatusWeather) tetap memakai binding:"required".
+//   - Field numerik TIDAK memakai binding:"required"; kesalahan format
+//     angka tetap akan ditangkap oleh JSON decoder sebagai error bind.
+//
+// Field opsional memakai pointer (*float64, *string, *int) agar bisa
+// membedakan "tidak dikirim" (nil) dari "dikirim dengan nilai 0" (pointer
+// ke 0). Ini berguna untuk update parsial di masa depan dan untuk
+// mempertahankan nilai NULL di database.
 type WeatherPredictionInput struct {
 	UserID         string `json:"user_id" binding:"required"`
 	StationID      string `json:"station_id" binding:"required"`
@@ -186,10 +279,20 @@ type WeatherPredictionInput struct {
 	// Mengikuti kolom DB uncertainty_metric (sebelumnya rmse_metric).
 	UncertaintyMetric *float64 `json:"uncertainty_metric"`
 
+	// Info tentang model AI yang menghasilkan prediksi ini (opsional,
+	// bisa dikosongkan jika prediksi diinput manual).
 	ModelVersion      *string `json:"model_version"`
 	PredictionHorizon *int    `json:"prediction_horizon"`
 }
 
+// parsePredictionDate mencoba dua format tanggal:
+//
+//  1. RFC3339 (mis. "2025-01-15T08:00:00Z") — format lengkap dengan zona waktu.
+//  2. "2006-01-02" (mis. "2025-01-15") — format tanggal saja, umum dipakai
+//     di form.
+//
+// RFC3339 dicoba lebih dulu karena lebih ketat/spesifik. Jika gagal,
+// fallback ke format tanggal saja.
 func parsePredictionDate(raw string) (time.Time, error) {
 	if t, err := time.Parse(time.RFC3339, raw); err == nil {
 		return t, nil
@@ -197,7 +300,16 @@ func parsePredictionDate(raw string) (time.Time, error) {
 	return time.Parse("2006-01-02", raw)
 }
 
-// toWrite memvalidasi UUID dan tanggal, lalu mengubah input menjadi data tulis.
+// toWrite mengubah WeatherPredictionInput menjadi repositories.PredictionWrite.
+//
+// Return kedua (string) adalah pesan error yang siap dikirim ke client.
+// Jika string kosong, artinya konversi berhasil. Pola ini dipakai agar
+// pemanggil tidak perlu mengulang pengecekan yang sama di beberapa handler
+// (Create & Update).
+//
+// Validasi yang dilakukan:
+//   - UserID & StationID: harus UUID valid.
+//   - PredictionDate: harus salah satu format yang didukung parsePredictionDate.
 func (in WeatherPredictionInput) toWrite() (repositories.PredictionWrite, string) {
 	userID, err := parseBinaryUUID(in.UserID)
 	if err != nil {
@@ -231,7 +343,20 @@ func (in WeatherPredictionInput) toWrite() (repositories.PredictionWrite, string
 	}, ""
 }
 
-// POST /api/admin/weather-predictions
+// =============================================================================
+// CRUD
+// =============================================================================
+
+// CreateWeatherPrediction membuat prediksi cuaca baru.
+//
+// Endpoint: POST /api/weather-predictions (butuh permission
+// "manage-weather-predictions" di routes.go).
+//
+// Perilaku khusus:
+//   - Jika user_id atau station_id yang dirujuk tidak ada di database,
+//     MySQL mengembalikan error foreign key. Kasus ini dibalas 400
+//     (bukan 500) karena penyebabnya input user, dan pesan errornya
+//     dibuat jelas agar frontend bisa menampilkan feedback yang tepat.
 func CreateWeatherPrediction() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var input WeatherPredictionInput
@@ -260,7 +385,23 @@ func CreateWeatherPrediction() gin.HandlerFunc {
 	}
 }
 
-// PUT /api/admin/weather-predictions/:id
+// UpdateWeatherPrediction mengubah prediksi yang sudah ada.
+//
+// Endpoint: PUT /api/weather-predictions/:id (butuh permission
+// "manage-weather-predictions" di routes.go).
+//
+// Alur:
+//  1. Validasi format UUID di path.
+//  2. Cek keberadaan prediksi dulu (SELECT). Ini penting karena UPDATE
+//     di MySQL tidak error saat ID tidak ditemukan — hanya 0 row affected.
+//     Dengan cek awal, kita bisa membalas 404 dengan jelas.
+//  3. Bind body + validasi lewat toWrite.
+//  4. Jalankan update. FK violation -> 400.
+//  5. Baca ulang untuk mengembalikan data terbaru ke frontend.
+//
+// Catatan: update ini bersifat FULL REPLACE (semua field di body dipakai
+// untuk menimpa). Field opsional yang dikirim nil (tidak ada di body)
+// akan menjadi NULL di database, sesuai perilaku pointer.
 func UpdateWeatherPrediction() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx := c.Request.Context()
@@ -314,7 +455,14 @@ func UpdateWeatherPrediction() gin.HandlerFunc {
 	}
 }
 
-// DELETE /api/admin/weather-predictions/:id
+// DeleteWeatherPrediction menghapus prediksi berdasarkan ID.
+//
+// Endpoint: DELETE /api/weather-predictions/:id (butuh permission
+// "manage-weather-predictions" di routes.go).
+//
+// Nilai `deleted` dari repo dipakai untuk membedakan:
+//   - false -> prediksi tidak ada, balas 404 (bukan 200 "berhasil").
+//   - true  -> prediksi benar-benar terhapus, balas 200.
 func DeleteWeatherPrediction() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := parseBinaryUUID(c.Param("id"))

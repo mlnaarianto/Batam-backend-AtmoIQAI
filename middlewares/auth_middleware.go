@@ -19,7 +19,8 @@ import (
 
 var JwtKey []byte
 
-// InitJWT dipanggil di main() SETELAH godotenv.Load().
+// InitJWT wajib dipanggil dari main() setelah godotenv.Load(),
+// karena secret diambil dari environment variable JWT_SECRET.
 func InitJWT() error {
 	secret := os.Getenv("JWT_SECRET")
 	if len(secret) < 32 {
@@ -29,6 +30,8 @@ func InitJWT() error {
 	return nil
 }
 
+// AuthMiddleware memvalidasi access token di header Authorization
+// dan menyimpan data user ke Gin Context agar bisa dipakai handler berikutnya.
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
@@ -38,6 +41,7 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
+		// Header harus berformat "Bearer <token>".
 		tokenString := strings.Split(authHeader, "Bearer ")
 		if len(tokenString) != 2 {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Format token salah"})
@@ -52,7 +56,8 @@ func AuthMiddleware() gin.HandlerFunc {
 			func(token *jwt.Token) (interface{}, error) {
 				return JwtKey, nil
 			},
-			jwt.WithValidMethods([]string{"HS256"}), // tolak algoritma selain HS256
+			// Batasi algoritma yang diterima agar tidak bisa di-bypass (mis. alg=none).
+			jwt.WithValidMethods([]string{"HS256"}),
 		)
 
 		if err != nil || !token.Valid {
@@ -61,7 +66,7 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// Set data dari JWT claims ke dalam Gin Context
+		// Simpan data penting dari claims ke context agar handler bisa memakainya.
 		c.Set("user_id", claims["user_id"])
 		c.Set("username", claims["username"])
 		c.Set("role", claims["role"])
@@ -70,8 +75,9 @@ func AuthMiddleware() gin.HandlerFunc {
 	}
 }
 
-// RequirePermission memeriksa permission langsung ke database (SQL murni),
-// memakai user_id dari JWT. Bypass admin ada di dalam query HasPermission.
+// RequirePermission memeriksa apakah user (diambil dari JWT) memiliki permission
+// tertentu. Pengecekan dilakukan langsung ke database via query SQL murni.
+// Bypass untuk admin sudah ditangani di dalam HasPermission.
 func RequirePermission(requiredPermission string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userIDVal, exists := c.Get("user_id")
@@ -91,7 +97,7 @@ func RequirePermission(requiredPermission string) gin.HandlerFunc {
 		allowed, err := repositories.NewPermissionRepository(config.SQLDB).
 			HasPermission(c.Request.Context(), models.UUIDBinary(parsed), requiredPermission)
 		if err != nil {
-			// Ganti dengan config.Log (Zap) kalau mau.
+			// Bisa diganti config.Log (Zap) jika ingin konsisten dengan logger utama.
 			log.Printf("RequirePermission: gagal cek permission %q untuk user %s: %v", requiredPermission, parsed, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Terjadi kesalahan server"})
 			c.Abort()

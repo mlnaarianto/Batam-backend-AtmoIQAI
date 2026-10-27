@@ -14,28 +14,28 @@ import (
 )
 
 func main() {
-	// 0. Muat file .env paling awal, sebelum yang lain membaca environment
+	// 0. Muat .env paling awal agar semua konfigurasi membaca environment yang benar.
 	if err := godotenv.Load(); err != nil {
 		log.Println("Peringatan: Gagal memuat file .env, menggunakan variabel environment sistem.")
 	}
 
-	// 1. Inisialisasi Zap Logger
+	// 1. Inisialisasi logger terpusat.
 	config.InitLogger()
 	defer config.Log.Sync()
 
 	config.Log.Info("Aplikasi sedang diinisialisasi...")
 
-	// 2. Inisialisasi JWT (harus setelah .env dimuat)
+	// 2. Inisialisasi JWT setelah .env dimuat karena membutuhkan secret dari environment.
 	if err := middlewares.InitJWT(); err != nil {
 		config.Log.Fatal("Konfigurasi JWT tidak valid", zap.Error(err))
 	}
 
-	// 3. Koneksi Database
+	// 3. Hubungkan ke database dan pastikan koneksi ditutup saat aplikasi berhenti.
 	config.ConnectDB()
 	defer config.CloseDB()
 
-	// 4. Seeder hanya jika diminta eksplisit lewat env var.
-	// Seeder berjalan dalam satu transaksi: kalau gagal, tidak ada data yang tersimpan.
+	// 4. Jalankan seeder hanya jika RUN_SEEDER=true.
+	// Seeder berjalan dalam satu transaksi, jadi jika gagal tidak ada data yang tersimpan.
 	if os.Getenv("RUN_SEEDER") == "true" {
 		config.Log.Info("RUN_SEEDER=true terdeteksi, menjalankan seeder...")
 		if err := database.RunAllSeeders(); err != nil {
@@ -48,23 +48,24 @@ func main() {
 
 	r := gin.Default()
 
-	// BARU: jangan percayai header X-Forwarded-For dari client.
-	// c.ClientIP() akan memakai IP koneksi langsung (RemoteAddr).
+	// 5. Jangan percayai header X-Forwarded-For dari client.
+	// Dengan begitu, c.ClientIP() memakai IP koneksi langsung (RemoteAddr).
 	if err := r.SetTrustedProxies(nil); err != nil {
 		config.Log.Fatal("Gagal mengatur trusted proxies", zap.Error(err))
 	}
 
-	// 5. Middleware CORS
+	// 6. Aktifkan middleware CORS.
 	r.Use(middlewares.CORSMiddleware())
 
-	// 6. Daftarkan Rute API
+	// 7. Daftarkan semua route API.
 	routes.SetupRouter(r)
 
-	// 7. Jalankan Server
+	// 8. Tentukan port server. Jika PORT kosong, gunakan 8080.
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
+
 	config.Log.Info("Server berhasil berjalan", zap.String("port", ":"+port))
 	if err := r.Run(":" + port); err != nil {
 		config.Log.Fatal("Server berhenti karena error", zap.Error(err))

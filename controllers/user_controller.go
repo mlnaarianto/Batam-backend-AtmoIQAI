@@ -13,9 +13,22 @@ import (
 	"go.uber.org/zap"
 )
 
-// UpdateUserRoles mengganti/menimpa seluruh role milik seorang user
-// Endpoint: PUT /api/admin/users/:id/roles
+// UpdateUserRoles MENGGANTI seluruh role milik seorang user (bukan menambah).
+// Artinya, role yang tidak disebutkan di body akan dihapus dari user tersebut.
+// Pola "replace" dipilih agar frontend cukup mengirim kondisi final dari
+// checkbox/selection, tanpa perlu mengirim daftar "tambahan" dan "hapus"
+// secara terpisah.
+//
+// Endpoint: PUT /api/users/:id/roles (butuh izin "manage-user-roles")
 // Body: { "role_ids": ["uuid-1", "uuid-2", ...] }
+//
+// Alur:
+//  1. Bind body & validasi format UUID user di path.
+//  2. Bersihkan input role_ids: buang yang tidak valid atau duplikat.
+//  3. Buka transaksi, lock user (SELECT ... FOR UPDATE) agar tidak bentrok
+//     dengan request lain yang mengubah role user yang sama secara bersamaan.
+//  4. Ganti relasi user_roles (delete + insert) di dalam transaksi.
+//  5. Commit & log.
 func UpdateUserRoles(c *gin.Context) {
 	userIDStr := c.Param("id")
 
@@ -36,7 +49,12 @@ func UpdateUserRoles(c *gin.Context) {
 	}
 	userID := models.UUIDBinary(parsedUserID)
 
-	// UUID role yang tidak valid atau duplikat dilewati
+	// Normalisasi daftar role:
+	//   - UUID tidak valid -> dilewati (bukan error) agar frontend tetap
+	//     bisa mengirim data mentah dari state UI tanpa harus membersihkan.
+	//   - UUID nil -> dilewati.
+	//   - Duplikat -> dilewati supaya tidak mencoba insert baris ganda yang
+	//     akan gagal karena unique constraint di tabel relasi.
 	seen := map[uuid.UUID]bool{}
 	roleIDs := make([]models.UUIDBinary, 0, len(input.RoleIDs))
 	for _, s := range input.RoleIDs {
@@ -59,6 +77,11 @@ func UpdateUserRoles(c *gin.Context) {
 
 	repo := repositories.NewRBACRepository(tx)
 
+	// LockUser melakukan SELECT ... FOR UPDATE. Tujuannya:
+	//   - memastikan user benar-benar ada sebelum diubah (404 kalau tidak),
+	//   - mencegah race condition kalau ada dua request mengubah role
+	//     user yang sama pada waktu bersamaan.
+	// Nilai username dipakai hanya untuk keperluan logging.
 	username, err := repo.LockUser(ctx, userID)
 	if errors.Is(err, repositories.ErrNotFound) {
 		helpers.ResponseNotFound(c, gin.H{"error": "Pengguna tidak ditemukan"})
@@ -70,6 +93,9 @@ func UpdateUserRoles(c *gin.Context) {
 		return
 	}
 
+	// ReplaceUserRoles menghapus relasi lama lalu menyisipkan yang baru
+	// dalam satu transaksi, sehingga tidak ada kondisi "user tanpa role"
+	// yang terlihat oleh request lain di tengah proses.
 	if err := repo.ReplaceUserRoles(ctx, userID, roleIDs); err != nil {
 		config.Log.Error("Gagal mengganti role user", zap.String("user_id", userIDStr), zap.Error(err))
 		helpers.ResponseInternalError(c, gin.H{"error": "Gagal memperbarui role pengguna"})
@@ -81,6 +107,8 @@ func UpdateUserRoles(c *gin.Context) {
 		return
 	}
 
+	// Log dalam bentuk "input asli" (bukan roleIDs yang sudah dinormalisasi)
+	// agar saat audit terlihat apa yang sebenarnya dikirim client.
 	config.Log.Info("Role pengguna berhasil diperbarui",
 		zap.String("user_id", userIDStr),
 		zap.String("username", username),

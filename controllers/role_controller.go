@@ -14,9 +14,22 @@ import (
 	"go.uber.org/zap"
 )
 
-// UpdateRolePermissions mengganti/menimpa seluruh permission milik sebuah role
-// Endpoint: PUT /api/admin/roles/:id/permissions
+// UpdateRolePermissions MENGGANTI seluruh permission milik sebuah role
+// (bukan menambah). Artinya, permission yang tidak disebutkan di body akan
+// dihapus dari role tersebut. Pola "replace" dipilih agar frontend cukup
+// mengirim kondisi final dari checkbox matriks role-permission, tanpa perlu
+// mengirim daftar "tambahan" dan "hapus" secara terpisah.
+//
+// Endpoint: PUT /api/roles/:id/permissions
 // Body: { "permission_ids": ["uuid-1", "uuid-2", ...] }
+//
+// Alur:
+//  1. Bind body & validasi format UUID role.
+//  2. Bersihkan input permission_ids: buang yang tidak valid atau duplikat.
+//  3. Buka transaksi, lock role (SELECT ... FOR UPDATE) agar tidak bentrok
+//     dengan request lain yang mengubah role yang sama secara bersamaan.
+//  4. Ganti relasi role_permissions (delete + insert) di dalam transaksi.
+//  5. Commit & log.
 func UpdateRolePermissions(c *gin.Context) {
 	roleIDStr := c.Param("id")
 
@@ -37,7 +50,12 @@ func UpdateRolePermissions(c *gin.Context) {
 	}
 	roleID := models.UUIDBinary(parsedRoleID)
 
-	// UUID permission yang tidak valid atau duplikat dilewati
+	// Normalisasi daftar permission:
+	//   - UUID tidak valid -> dilewati (bukan error) agar frontend tetap
+	//     bisa mengirim data mentah dari state UI tanpa harus membersihkan.
+	//   - UUID nil -> dilewati.
+	//   - Duplikat -> dilewati supaya tidak mencoba insert baris ganda yang
+	//     akan gagal karena unique constraint.
 	seen := map[uuid.UUID]bool{}
 	permIDs := make([]models.UUIDBinary, 0, len(input.PermissionIDs))
 	for _, s := range input.PermissionIDs {
@@ -60,6 +78,11 @@ func UpdateRolePermissions(c *gin.Context) {
 
 	repo := repositories.NewRBACRepository(tx)
 
+	// LockRole melakukan SELECT ... FOR UPDATE. Tujuannya:
+	//   - memastikan role benar-benar ada sebelum diubah (404 kalau tidak),
+	//   - mencegah race condition kalau ada dua request mengubah permission
+	//     role yang sama pada waktu bersamaan.
+	// Nilai roleName dipakai hanya untuk keperluan logging.
 	roleName, err := repo.LockRole(ctx, roleID)
 	if errors.Is(err, repositories.ErrNotFound) {
 		helpers.ResponseNotFound(c, gin.H{"error": "Role tidak ditemukan"})
@@ -71,6 +94,9 @@ func UpdateRolePermissions(c *gin.Context) {
 		return
 	}
 
+	// ReplaceRolePermissions menghapus relasi lama lalu menyisipkan yang baru
+	// dalam satu transaksi, sehingga tidak ada kondisi "role tanpa permission"
+	// yang terlihat oleh request lain di tengah proses.
 	if err := repo.ReplaceRolePermissions(ctx, roleID, permIDs); err != nil {
 		config.Log.Error("Gagal mengganti permission role", zap.String("role_id", roleIDStr), zap.Error(err))
 		helpers.ResponseInternalError(c, gin.H{"error": "Gagal memperbarui permission role"})
@@ -82,6 +108,8 @@ func UpdateRolePermissions(c *gin.Context) {
 		return
 	}
 
+	// Log dalam bentuk "input asli" (bukan permIDs yang sudah dinormalisasi)
+	// agar saat audit terlihat apa yang sebenarnya dikirim client.
 	config.Log.Info("Permission role berhasil diperbarui",
 		zap.String("role_id", roleIDStr),
 		zap.String("role_name", roleName),
@@ -90,9 +118,15 @@ func UpdateRolePermissions(c *gin.Context) {
 	helpers.ResponseOK(c, gin.H{"message": "Permission role berhasil diperbarui"})
 }
 
-// CreateRole membuat role baru
-// Endpoint: POST /api/admin/roles
+// CreateRole membuat role baru.
+//
+// Endpoint: POST /api/roles
 // Body: { "name": "editor" }
+//
+// Validasi:
+//   - name wajib diisi, maksimal 100 karakter.
+//   - Duplikasi nama role dideteksi dari error MySQL (unique constraint)
+//     dan dibalas 409 Conflict, bukan 500, karena ini kesalahan input user.
 func CreateRole(c *gin.Context) {
 	var input struct {
 		Name string `json:"name" binding:"required,max=100"`
@@ -105,6 +139,7 @@ func CreateRole(c *gin.Context) {
 	repo := repositories.NewRBACRepository(config.SQLDB)
 	role, err := repo.CreateRole(c.Request.Context(), input.Name)
 	if repositories.IsDuplicateEntry(err) {
+		// 409 Conflict lebih semantik dibanding 400 untuk kasus duplikasi.
 		helpers.WriteJSON(c, http.StatusConflict, "Conflict", gin.H{"error": "Nama role sudah dipakai"})
 		return
 	}
@@ -121,9 +156,16 @@ func CreateRole(c *gin.Context) {
 	})
 }
 
-// UpdateRole mengubah nama role
-// Endpoint: PUT /api/admin/roles/:id
+// UpdateRole mengubah nama role.
+//
+// Endpoint: PUT /api/roles/:id
 // Body: { "name": "editor-baru" }
+//
+// Catatan penting: UPDATE pada ID yang tidak ada TIDAK menghasilkan error
+// di MySQL — hanya 0 row yang terpengaruh. Karena itu, setelah update kita
+// membaca ulang role lewat GetRole untuk memastikan role memang ada,
+// sekaligus mengembalikan data terbaru ke frontend. Jika tidak ditemukan,
+// balas 404.
 func UpdateRole(c *gin.Context) {
 	roleIDStr := c.Param("id")
 
@@ -155,7 +197,7 @@ func UpdateRole(c *gin.Context) {
 		return
 	}
 
-	// Dibaca ulang: sekaligus memastikan role ada (UPDATE pada ID yang tidak ada tidak error)
+	// Baca ulang setelah update: sekaligus memverifikasi role ada.
 	role, err := repo.GetRole(ctx, roleID)
 	if errors.Is(err, repositories.ErrNotFound) {
 		helpers.ResponseNotFound(c, gin.H{"error": "Role tidak ditemukan"})
@@ -173,8 +215,18 @@ func UpdateRole(c *gin.Context) {
 	})
 }
 
-// DeleteRole menghapus role
-// Endpoint: DELETE /api/admin/roles/:id
+// DeleteRole menghapus sebuah role.
+//
+// Endpoint: DELETE /api/roles/:id
+//
+// Operasi dibungkus transaksi karena di dalam repo kemungkinan menghapus
+// relasi turunan (mis. role_permissions) terlebih dahulu sebelum baris
+// role-nya. Jika salah satu langkah gagal, rollback memastikan tidak ada
+// data setengah terhapus.
+//
+// `deleted` dari repo dipakai untuk membedakan:
+//   - false -> role tidak ada (balas 404, bukan 200 "berhasil").
+//   - true  -> role benar-benar terhapus.
 func DeleteRole(c *gin.Context) {
 	roleIDStr := c.Param("id")
 

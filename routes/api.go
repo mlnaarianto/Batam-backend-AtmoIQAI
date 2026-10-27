@@ -13,29 +13,33 @@ func SetupRouter(r *gin.Engine) {
 	// =========================================================================
 	// RUTE PUBLIK (tanpa autentikasi)
 	// =========================================================================
+
+	// Health check sederhana untuk memastikan API berjalan.
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "pong! Aeroclimate API is running smoothly."})
 	})
 
-	// /refresh dan /logout sengaja TANPA AuthMiddleware karena dipanggil saat
-	// access token sudah habis. Identitas dibuktikan oleh refresh token di cookie.
+	// Login, refresh, dan logout tidak memakai AuthMiddleware.
+	// Alasannya: access token bisa sudah habis, jadi identitas diverifikasi
+	// lewat refresh token yang disimpan di cookie.
 	r.POST("/login", controllers.Login)
 	r.POST("/refresh", controllers.Refresh)
 	r.POST("/logout", controllers.Logout)
 
-	// File foto profil agar bisa ditampilkan lewat URL
+	// File foto profil agar bisa diakses lewat URL.
 	r.Static("/uploads/profile", "./uploads/profile")
 
-	// Data publik (View All / View per ID)
+	// Data publik: daftar prediksi cuaca dan daftar stasiun.
 	r.GET("/api/public/weather-predictions", controllers.GetPublicWeatherPredictions())
 	r.GET("/api/public/stations", controllers.GetStations())
 
 	// =========================================================================
 	// RUTE TERPROTEKSI: semua di bawah /api wajib login.
-	// Akses ditentukan oleh permission per rute, bukan oleh prefix URL.
+	// Hak akses ditentukan oleh permission per rute, bukan oleh prefix URL.
 	// =========================================================================
 	api := r.Group("/api", middlewares.AuthMiddleware())
 
+	// Alias agar penulisan permission lebih singkat.
 	perm := middlewares.RequirePermission
 
 	// --- Hanya butuh login ---------------------------------------------------
@@ -46,26 +50,26 @@ func SetupRouter(r *gin.Engine) {
 	})
 	api.GET("/me", controllers.Me)
 
-	// Profil sendiri (ID selalu dari JWT, tanpa RequirePermission)
+	// Profil sendiri: ID user selalu diambil dari JWT, jadi tidak perlu RequirePermission.
 	api.GET("/profile", controllers.GetProfile)
 	api.PUT("/profile/password", controllers.ChangePassword)
 	api.POST("/profile/photo", controllers.UploadProfilePhoto)
 	api.DELETE("/profile/photo", controllers.DeleteProfilePhoto)
 
-	// --- Dashboard & RBAC (view-weather) --------------------------------------
+	// --- Dashboard & RBAC (butuh view-weather) -------------------------------
 	api.GET("/dashboard-stats", perm("view-weather"), controllers.GetDashboardStats())
 	api.GET("/rbac", perm("view-weather"), controllers.GetRBACData)
 
-	// --- Role user ------------------------------------------------------------
+	// --- Role user -----------------------------------------------------------
 	api.PUT("/users/:id/roles", perm("manage-user-roles"), controllers.UpdateUserRoles)
 
-	// --- Role & permission ----------------------------------------------------
+	// --- Role & permission ---------------------------------------------------
 	api.POST("/roles", perm("manage-roles"), controllers.CreateRole)
 	api.PUT("/roles/:id", perm("manage-roles"), controllers.UpdateRole)
 	api.DELETE("/roles/:id", perm("manage-roles"), controllers.DeleteRole)
 	api.PUT("/roles/:id/permissions", perm("manage-role-permissions"), controllers.UpdateRolePermissions)
 
-	// --- Station (manage-stations) --------------------------------------------
+	// --- Station (butuh manage-stations) -------------------------------------
 	api.GET("/stations", perm("manage-stations"), controllers.GetStations())
 	api.GET("/stations/geocode", perm("manage-stations"), controllers.GeocodeSearch())
 	api.GET("/stations/reverse-geocode", perm("manage-stations"), controllers.ReverseGeocode())
@@ -74,12 +78,14 @@ func SetupRouter(r *gin.Engine) {
 	api.PUT("/stations/:id", perm("manage-stations"), controllers.UpdateStation())
 	api.DELETE("/stations/:id", perm("manage-stations"), controllers.DeleteStation())
 
-	// --- Weather predictions ----------------------------------------------------
-	// List: hanya login, filter per user diatur di controller
+	// --- Weather predictions -------------------------------------------------
+	// List: cukup login; filter data per user diatur di controller.
 	api.GET("/weather-predictions", controllers.GetWeatherPredictions())
-	// Detail: butuh izin view-id
+
+	// Detail: butuh izin view-id.
 	api.GET("/weather-predictions/:id", perm("weather-predictions:view-id"), controllers.GetWeatherPredictionByID())
-	// Create, update, delete: butuh izin manage-weather-predictions
+
+	// Create, update, delete: butuh izin manage-weather-predictions.
 	api.POST("/weather-predictions", perm("manage-weather-predictions"), controllers.CreateWeatherPrediction())
 	api.PUT("/weather-predictions/:id", perm("manage-weather-predictions"), controllers.UpdateWeatherPrediction())
 	api.DELETE("/weather-predictions/:id", perm("manage-weather-predictions"), controllers.DeleteWeatherPrediction())
