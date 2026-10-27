@@ -113,3 +113,63 @@ func RequirePermission(requiredPermission string) gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+// RequirePasswordChanged memblokir request (403) selama user masih
+// harus mengganti password (must_change_password = 1).
+//
+// Harus dipasang SETELAH AuthMiddleware, karena butuh user_id di
+// context. Route yang boleh diakses walau password belum diganti
+// (/me, /profile/password, /logout) sengaja TIDAK dipasangi middleware
+// ini (lihat routes/api.go).
+//
+// Flag dibaca dari database pada setiap request, bukan dari JWT, agar
+// reset oleh admin langsung berlaku tanpa menunggu access token habis.
+//
+// Fail-closed: jika pengecekan gagal (error DB), request ditolak 500,
+// bukan dibiarkan lewat.
+//
+// Response 403 membawa "code": "must_change_password" supaya frontend
+// bisa membedakannya dari 403 biasa (tidak punya izin) dan mengarahkan
+// user ke halaman ganti password.
+func RequirePasswordChanged() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userIDVal, exists := c.Get("user_id")
+		if !exists || userIDVal == nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+			c.Abort()
+			return
+		}
+
+		parsed, err := uuid.Parse(fmt.Sprint(userIDVal))
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+			c.Abort()
+			return
+		}
+
+		must, err := repositories.NewAuthRepository(config.SQLDB).
+			MustChangePassword(c.Request.Context(), models.UUIDBinary(parsed))
+		if errors.Is(err, repositories.ErrNotFound) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "User tidak ditemukan"})
+			c.Abort()
+			return
+		}
+		if err != nil {
+			log.Printf("RequirePasswordChanged: gagal cek must_change_password user %s: %v", parsed, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Terjadi kesalahan server"})
+			c.Abort()
+			return
+		}
+
+		if must {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "Anda wajib mengganti password terlebih dahulu",
+				"code":  "must_change_password",
+			})
+			c.Abort()
+			return
+		}
+
+		c.Next()
+	}
+}

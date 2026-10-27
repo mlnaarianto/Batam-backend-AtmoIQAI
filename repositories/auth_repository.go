@@ -40,8 +40,10 @@ import (
 //
 //   - Roles     : slice nama role (string), bukan struct. Ini cukup
 //     untuk kebutuhan:
-//     * Menyisipkan claim "role" di JWT (satu role utama).
-//     * Cek "apakah user admin?" lewat helper services.RoleOf.
+//
+//   - Menyisipkan claim "role" di JWT (satu role utama).
+//
+//   - Cek "apakah user admin?" lewat helper services.RoleOf.
 //     Tidak perlu detail RoleItem lengkap di sini.
 type AuthUser struct {
 	ID                 models.UUIDBinary
@@ -108,6 +110,22 @@ func (r *AuthRepository) FindByID(ctx context.Context, id models.UUIDBinary) (*A
 	return r.findOne(ctx, q, id)
 }
 
+// MustChangePassword membaca HANYA flag must_change_password milik user.
+//
+// Dipakai middleware yang berjalan di setiap request, jadi sengaja
+// ringan: satu query, satu kolom, tanpa roles. Flag dibaca dari
+// database (bukan dari klaim JWT) agar reset password oleh admin
+// langsung berlaku walau access token lama user masih hidup.
+func (r *AuthRepository) MustChangePassword(ctx context.Context, id models.UUIDBinary) (bool, error) {
+	var must bool
+	err := r.db.QueryRowContext(ctx,
+		`SELECT must_change_password FROM users WHERE id = ?`, id).Scan(&must)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, ErrNotFound
+	}
+	return must, err
+}
+
 // findOne adalah helper internal yang mengeksekusi query utama user,
 // lalu melengkapinya dengan daftar roles.
 //
@@ -160,8 +178,10 @@ func (r *AuthRepository) findOne(ctx context.Context, query string, args ...any)
 //
 //   - Hanya kolom `r.name` yang diambil. Kita tidak butuh ID, timestamp,
 //     atau permission di sini — pemanggil hanya butuh nama role untuk:
-//     * Menyusun klaim JWT "role".
-//     * Cek "apakah user admin?" lewat services.RoleOf.
+//
+//   - Menyusun klaim JWT "role".
+//
+//   - Cek "apakah user admin?" lewat services.RoleOf.
 //     Jika suatu saat butuh detail role, gunakan RBACRepository.
 //
 //   - Tidak ada `ORDER BY`. Urutan role tidak bermakna di sini; RoleOf
